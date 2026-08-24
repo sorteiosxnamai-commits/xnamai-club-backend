@@ -15,7 +15,10 @@ import { webhooksRouter } from './routes/webhooks';
 
 async function bootstrap() {
   const app = express();
-  app.use(cors({ origin: env.frontendUrl }));
+  app.use(cors({
+    origin: env.frontendUrl,
+    credentials: true,
+  }));
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/health', (_req, res) => {
