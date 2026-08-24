@@ -8,7 +8,7 @@ import { requireAuth } from '../middleware/auth';
 import { Plan } from '../entities/Plan';
 import { User } from '../entities/User';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
-import { auditSubscription, recordStripeInvoice, upsertLocalSubscription } from '../services/stripe-billing';
+import { auditSubscription, recordStripeInvoice, syncStripeInvoices, upsertLocalSubscription } from '../services/stripe-billing';
 
 export const subscriptionsRouter = Router();
 subscriptionsRouter.use(requireAuth);
@@ -113,6 +113,7 @@ subscriptionsRouter.get('/confirm', async (req, res) => {
       last4: card?.last4,
     },
   });
+  await syncStripeInvoices(subscription);
   await auditSubscription(user.id, subscription.id, 'SUBSCRIPTION_CREATED');
 
   res.json({

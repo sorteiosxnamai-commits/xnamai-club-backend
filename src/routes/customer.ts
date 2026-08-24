@@ -4,15 +4,33 @@ import { requireAuth } from '../middleware/auth';
 import { Subscription } from '../entities/Subscription';
 import { Invoice } from '../entities/Invoice';
 import { PaymentMethod } from '../entities/PaymentMethod';
+import { syncStripeInvoices } from '../services/stripe-billing';
 
 export const customerRouter = Router();
 customerRouter.use(requireAuth);
 
 customerRouter.get('/dashboard', async (req, res) => {
-  const subscription = await AppDataSource.getRepository(Subscription).findOne({ where: { user: { id: req.auth!.sub } }, order: { createdAt: 'DESC' } });
-  const paymentMethod = await AppDataSource.getRepository(PaymentMethod).findOne({ where: { user: { id: req.auth!.sub }, active: true }, order: { createdAt: 'DESC' } });
+  const subscription = await AppDataSource.getRepository(Subscription).findOne({
+    where: { user: { id: req.auth!.sub } },
+    order: { createdAt: 'DESC' },
+  });
+  const paymentMethod = await AppDataSource.getRepository(PaymentMethod).findOne({
+    where: { user: { id: req.auth!.sub }, active: true },
+    order: { createdAt: 'DESC' },
+  });
+  if (subscription?.gatewaySubscriptionId) {
+    try {
+      await syncStripeInvoices(subscription);
+    } catch (error) {
+      console.error('Falha ao sincronizar faturas Stripe:', error);
+    }
+  }
   const invoices = subscription
-    ? await AppDataSource.getRepository(Invoice).find({ where: { subscription: { id: subscription.id } }, order: { createdAt: 'DESC' }, take: 10 })
+    ? await AppDataSource.getRepository(Invoice).find({
+      where: { subscription: { id: subscription.id } },
+      order: { createdAt: 'DESC' },
+      take: 10,
+    })
     : [];
 
   res.json({ subscription, paymentMethod, invoices });

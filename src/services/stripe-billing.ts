@@ -1,5 +1,6 @@
 import Stripe from 'stripe';
 import { AppDataSource } from '../config/data-source';
+import { stripe } from '../config/stripe';
 import { Plan } from '../entities/Plan';
 import { User } from '../entities/User';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
@@ -90,6 +91,18 @@ export async function upsertLocalSubscription(params: {
   }
 
   return subscription;
+}
+
+export async function syncStripeInvoices(subscription: Subscription) {
+  if (!subscription.gatewaySubscriptionId || !stripe) return;
+
+  const list = await stripe.invoices.list({
+    subscription: subscription.gatewaySubscriptionId,
+    limit: 24,
+  });
+  for (const invoice of list.data) {
+    await recordStripeInvoice(invoice, subscription);
+  }
 }
 
 export async function recordStripeInvoice(stripeInvoice: Stripe.Invoice, subscription: Subscription) {
