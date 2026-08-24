@@ -66,13 +66,27 @@ export async function seedInitialData() {
 
   const userRepo = AppDataSource.getRepository(User);
   const adminEmail = (process.env.ADMIN_EMAIL || 'admin@xnamai.local').toLowerCase();
-  if (!(await userRepo.findOne({ where: { email: adminEmail } }))) {
+  const adminPassword = process.env.ADMIN_PASSWORD || 'Admin123!';
+  const passwordHash = await bcrypt.hash(adminPassword, 12);
+
+  let admin = await userRepo.findOne({ where: { email: adminEmail } });
+  if (!admin) {
+    admin = await userRepo.findOne({ where: { role: UserRole.ADMIN } });
+  }
+  if (!admin) {
     await userRepo.save(userRepo.create({
       email: adminEmail,
       name: 'Admin XNaMai',
       companyName: 'XNaMai',
-      passwordHash: await bcrypt.hash(process.env.ADMIN_PASSWORD || 'Admin123!', 12),
+      passwordHash,
       role: UserRole.ADMIN,
     }));
+    console.log(`Admin criado: ${adminEmail}`);
+  } else {
+    admin.email = adminEmail;
+    admin.role = UserRole.ADMIN;
+    admin.passwordHash = passwordHash;
+    await userRepo.save(admin);
+    console.log(`Admin sincronizado: ${adminEmail}`);
   }
 }
