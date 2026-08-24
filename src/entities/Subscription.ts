@@ -28,22 +28,22 @@ export class Subscription {
   @Column({ type: 'varchar', default: SubscriptionStatus.PENDING })
   status!: SubscriptionStatus;
 
-  @Column({ nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
   startedAt!: Date | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
   currentPeriodStart!: Date | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
   currentPeriodEnd!: Date | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
   cancelledAt!: Date | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   gatewayCustomerId!: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   gatewaySubscriptionId!: string | null;
 
   @OneToMany(() => Invoice, (invoice) => invoice.subscription)

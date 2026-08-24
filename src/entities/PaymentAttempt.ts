@@ -18,10 +18,10 @@ export class PaymentAttempt {
   @Column({ type: 'varchar' })
   status!: PaymentAttemptStatus;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   failureCode!: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   failureMessage!: string | null;
 
   @CreateDateColumn()

@@ -9,8 +9,8 @@ services:
     region: oregon
     branch: main
     autoDeploy: true
-    buildCommand: npm install --include=dev && npm run build
-    startCommand: npm run start:prod
+    buildCommand: yarn install --production=false && yarn build
+    startCommand: yarn start
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV

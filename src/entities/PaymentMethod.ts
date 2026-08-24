@@ -18,19 +18,19 @@ export class PaymentMethod {
   @Column({ type: 'varchar' })
   type!: PaymentMethodType;
 
-  @Column({ default: 'demo' })
+  @Column({ type: 'varchar', default: 'demo' })
   provider!: string;
 
-  @Column()
+  @Column({ type: 'varchar' })
   providerPaymentMethodId!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   cardBrand!: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   cardLastFour!: string | null;
 
-  @Column({ default: true })
+  @Column({ type: 'boolean', default: true })
   active!: boolean;
 
   @CreateDateColumn()

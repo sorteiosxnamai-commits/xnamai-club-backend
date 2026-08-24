@@ -24,13 +24,13 @@ export class Invoice {
   @Column({ type: 'varchar', default: InvoiceStatus.PENDING })
   status!: InvoiceStatus;
 
-  @Column()
+  @Column({ type: 'timestamp' })
   dueDate!: Date;
 
-  @Column({ nullable: true })
+  @Column({ type: 'timestamp', nullable: true })
   paidAt!: Date | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   gatewayInvoiceId!: string | null;
 
   @OneToMany(() => PaymentAttempt, (attempt) => attempt.invoice)

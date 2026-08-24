@@ -5,16 +5,16 @@ export class AuditLog {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   actorUserId!: string | null;
 
-  @Column()
+  @Column({ type: 'varchar' })
   action!: string;
 
-  @Column()
+  @Column({ type: 'varchar' })
   entity!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   entityId!: string | null;
 
   @Column({ type: 'text', nullable: true })

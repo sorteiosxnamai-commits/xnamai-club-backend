@@ -6,10 +6,10 @@ export class Plan {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @Column({ unique: true })
+  @Column({ type: 'varchar', unique: true })
   code!: string;
 
-  @Column()
+  @Column({ type: 'varchar' })
   name!: string;
 
   @Column({ type: 'integer', nullable: true })
@@ -21,7 +21,7 @@ export class Plan {
   @Column({ type: 'text', default: '' })
   description!: string;
 
-  @Column({ default: true })
+  @Column({ type: 'boolean', default: true })
   active!: boolean;
 
   @Column({ type: 'integer', default: 0 })
