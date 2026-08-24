@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import { AppDataSource } from './config/data-source';
+import { AppDataSource, initializeDatabase } from './config/data-source';
 import { env } from './config/env';
 import { seedInitialData } from './services/seed';
 import { ensureStripeWebhookEndpoint } from './services/register-stripe-webhook';
@@ -14,15 +14,17 @@ import { adminRouter } from './routes/admin';
 import { webhooksRouter } from './routes/webhooks';
 
 async function bootstrap() {
-  await AppDataSource.initialize();
-  await seedInitialData();
-  await ensureStripeWebhookEndpoint();
-
   const app = express();
   app.use(cors({ origin: env.frontendUrl }));
   app.use(express.json({ limit: '1mb' }));
 
-  app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'xnamai-club-backend' }));
+  app.get('/api/health', (_req, res) => {
+    res.json({
+      ok: true,
+      service: 'xnamai-club-backend',
+      database: AppDataSource.isInitialized,
+    });
+  });
   app.use('/api/auth', authRouter);
   app.use('/api/plans', plansRouter);
   app.use('/api/subscriptions', subscriptionsRouter);
@@ -35,7 +37,20 @@ async function bootstrap() {
     res.status(500).json({ message: 'Erro interno do servidor.' });
   });
 
-  app.listen(env.port, '0.0.0.0', () => console.log(`XNaMai Club API em 0.0.0.0:${env.port}`));
+  await new Promise<void>((resolve) => {
+    app.listen(env.port, '0.0.0.0', () => {
+      console.log(`XNaMai Club API em 0.0.0.0:${env.port}`);
+      resolve();
+    });
+  });
+
+  await initializeDatabase();
+  await seedInitialData();
+  try {
+    await ensureStripeWebhookEndpoint();
+  } catch (error) {
+    console.error('Stripe: falha ao registrar webhook (API continua no ar).', error);
+  }
 }
 
 bootstrap().catch((error) => {
