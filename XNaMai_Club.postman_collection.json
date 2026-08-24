@@ -1,0 +1,72 @@
+{
+  "info": {
+    "name": "XNaMai Club API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000/api" },
+    { "key": "token", "value": "" },
+    { "key": "planId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": { "method": "GET", "url": "{{baseUrl}}/health" }
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"}],
+            "body": {"mode":"raw","raw":"{\n  \"name\": \"Cliente Demo\",\n  \"companyName\": \"Empresa Demo\",\n  \"email\": \"cliente@demo.com\",\n  \"password\": \"Cliente123!\"\n}"},
+            "url": "{{baseUrl}}/auth/register"
+          }
+        },
+        {
+          "name": "Login Admin",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"}],
+            "body": {"mode":"raw","raw":"{\n  \"email\": \"admin@xnamai.local\",\n  \"password\": \"Admin123!\"\n}"},
+            "url": "{{baseUrl}}/auth/login"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Plans",
+      "request": { "method": "GET", "url": "{{baseUrl}}/plans" }
+    },
+    {
+      "name": "Create Subscription",
+      "request": {
+        "method": "POST",
+        "header": [
+          {"key":"Content-Type","value":"application/json"},
+          {"key":"Authorization","value":"Bearer {{token}}"}
+        ],
+        "body": {"mode":"raw","raw":"{\n  \"planId\": \"{{planId}}\",\n  \"paymentMethodType\": \"CREDIT_CARD\",\n  \"paymentToken\": \"pm_demo_123\",\n  \"cardBrand\": \"Visa\",\n  \"cardLastFour\": \"4242\"\n}"},
+        "url": "{{baseUrl}}/subscriptions"
+      }
+    },
+    {
+      "name": "Customer Dashboard",
+      "request": {
+        "method": "GET",
+        "header": [{"key":"Authorization","value":"Bearer {{token}}"}],
+        "url": "{{baseUrl}}/me/dashboard"
+      }
+    },
+    {
+      "name": "Admin Dashboard",
+      "request": {
+        "method": "GET",
+        "header": [{"key":"Authorization","value":"Bearer {{token}}"}],
+        "url": "{{baseUrl}}/admin/dashboard"
+      }
+    }
+  ]
+}
