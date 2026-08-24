@@ -29,12 +29,15 @@ async function bootstrap() {
       database: AppDataSource.isInitialized,
     });
   });
-  app.use('/api/auth', authRouter);
-  app.use('/api/plans', plansRouter);
-  app.use('/api/subscriptions', subscriptionsRouter);
-  app.use('/api/me', customerRouter);
-  app.use('/api/admin', adminRouter);
-  app.use('/api/webhooks', webhooksRouter);
+  const api = express.Router();
+  api.use('/auth', authRouter);
+  api.use('/plans', plansRouter);
+  api.use('/subscriptions', subscriptionsRouter);
+  api.use('/me', customerRouter);
+  api.use('/admin', adminRouter);
+  api.use('/webhooks', webhooksRouter);
+  app.use('/api', api);
+  app.use(api);
 
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(err);
