@@ -1,7 +1,47 @@
 import bcrypt from 'bcryptjs';
 import { AppDataSource } from '../config/data-source';
+import { stripe } from '../config/stripe';
 import { Plan } from '../entities/Plan';
 import { User, UserRole } from '../entities/User';
+
+async function ensureStripePrices() {
+  if (!stripe) {
+    console.warn('Stripe: STRIPE_SECRET_KEY ausente — Price IDs não serão criados.');
+    return;
+  }
+
+  const planRepo = AppDataSource.getRepository(Plan);
+  const plans = await planRepo.find();
+  for (const plan of plans) {
+    if (plan.monthlyPriceCents == null) continue;
+
+    if (plan.stripePriceId) {
+      try {
+        const existing = await stripe.prices.retrieve(plan.stripePriceId);
+        if (existing.unit_amount === plan.monthlyPriceCents && existing.currency === 'brl' && !existing.deleted) {
+          continue;
+        }
+      } catch {
+        plan.stripePriceId = null;
+      }
+    }
+
+    const product = await stripe.products.create({
+      name: plan.name,
+      metadata: { planCode: plan.code },
+    });
+    const price = await stripe.prices.create({
+      product: product.id,
+      currency: 'brl',
+      unit_amount: plan.monthlyPriceCents,
+      recurring: { interval: 'month' },
+      metadata: { planCode: plan.code },
+    });
+    plan.stripePriceId = price.id;
+    await planRepo.save(plan);
+    console.log(`Stripe Price criado para ${plan.code}: ${price.id}`);
+  }
+}
 
 export async function seedInitialData() {
   const planRepo = AppDataSource.getRepository(Plan);
@@ -17,9 +57,12 @@ export async function seedInitialData() {
     const startPlan = await planRepo.findOne({ where: { code: 'START' } });
     if (startPlan && startPlan.monthlyPriceCents !== 100) {
       startPlan.monthlyPriceCents = 100;
+      startPlan.stripePriceId = null;
       await planRepo.save(startPlan);
     }
   }
+
+  await ensureStripePrices();
 
   const userRepo = AppDataSource.getRepository(User);
   const adminEmail = (process.env.ADMIN_EMAIL || 'admin@xnamai.local').toLowerCase();

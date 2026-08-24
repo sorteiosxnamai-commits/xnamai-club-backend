@@ -21,7 +21,7 @@ type StripeWebhookEndpoint = {
 type StripeErrorBody = { error?: { message?: string; code?: string } };
 
 function webhookUrl() {
-  return `${env.publicApiUrl}/api/webhooks/payment-provider`;
+  return `${env.publicApiUrl}/api/webhooks/stripe`;
 }
 
 async function stripeForm(method: string, path: string, body?: URLSearchParams) {

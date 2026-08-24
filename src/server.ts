@@ -11,7 +11,7 @@ import { plansRouter } from './routes/plans';
 import { subscriptionsRouter } from './routes/subscriptions';
 import { customerRouter } from './routes/customer';
 import { adminRouter } from './routes/admin';
-import { webhooksRouter } from './routes/webhooks';
+import { webhooksRouter, stripeWebhookHandler } from './routes/webhooks';
 
 async function bootstrap() {
   const app = express();
@@ -19,6 +19,7 @@ async function bootstrap() {
     origin: env.frontendUrl,
     credentials: true,
   }));
+  app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), stripeWebhookHandler);
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/health', (_req, res) => {

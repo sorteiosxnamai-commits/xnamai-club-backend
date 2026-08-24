@@ -9,5 +9,5 @@ export const env = {
     restrictedKey: process.env.STRIPE_RESTRICTED_KEY || '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
   },
-  publicApiUrl: (process.env.PUBLIC_API_URL || '').replace(/\/$/, ''),
+  publicApiUrl: (process.env.PUBLIC_API_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, ''),
 };

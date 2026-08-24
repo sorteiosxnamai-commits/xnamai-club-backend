@@ -1,87 +1,124 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import crypto from 'crypto';
+import Stripe from 'stripe';
 import { AppDataSource } from '../config/data-source';
+import { env } from '../config/env';
+import { requireStripe } from '../config/stripe';
 import { requireAuth } from '../middleware/auth';
 import { Plan } from '../entities/Plan';
 import { User } from '../entities/User';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
-import { Invoice, InvoiceStatus } from '../entities/Invoice';
-import { PaymentAttempt, PaymentAttemptStatus } from '../entities/PaymentAttempt';
-import { PaymentMethod, PaymentMethodType } from '../entities/PaymentMethod';
-import { audit } from '../services/audit';
+import { auditSubscription, recordStripeInvoice, upsertLocalSubscription } from '../services/stripe-billing';
 
 export const subscriptionsRouter = Router();
 subscriptionsRouter.use(requireAuth);
 
-const subscribeSchema = z.object({
+function nextCalendarMonth(from = new Date()) {
+  const next = new Date(from);
+  next.setMonth(next.getMonth() + 1);
+  return next;
+}
+
+async function getOrCreateStripeCustomer(user: User) {
+  const stripe = requireStripe();
+  const userRepo = AppDataSource.getRepository(User);
+  if (user.stripeCustomerId) {
+    return user.stripeCustomerId;
+  }
+  const customer = await stripe.customers.create({
+    email: user.email,
+    name: user.companyName || user.name,
+    metadata: { userId: user.id },
+  });
+  user.stripeCustomerId = customer.id;
+  await userRepo.save(user);
+  return customer.id;
+}
+
+const checkoutSchema = z.object({
   planId: z.string().uuid(),
-  paymentMethodType: z.nativeEnum(PaymentMethodType),
-  paymentToken: z.string().min(3),
-  cardBrand: z.string().optional(),
-  cardLastFour: z.string().regex(/^\d{4}$/).optional(),
-  simulateDecline: z.boolean().optional().default(false),
 });
 
-subscriptionsRouter.post('/', async (req, res) => {
-  const parsed = subscribeSchema.safeParse(req.body);
+subscriptionsRouter.post('/checkout', async (req, res) => {
+  const parsed = checkoutSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Dados inválidos.', issues: parsed.error.flatten() });
 
+  try {
+    const stripe = requireStripe();
   const user = await AppDataSource.getRepository(User).findOneByOrFail({ id: req.auth!.sub });
   const plan = await AppDataSource.getRepository(Plan).findOne({ where: { id: parsed.data.planId, active: true } });
-  if (!plan || plan.monthlyPriceCents == null) return res.status(400).json({ message: 'Plano indisponível para assinatura automática.' });
+  if (!plan || !plan.stripePriceId || plan.monthlyPriceCents == null) {
+    return res.status(400).json({ message: 'Plano indisponível para assinatura Stripe.' });
+  }
 
-  const subscriptionRepo = AppDataSource.getRepository(Subscription);
-  const existing = await subscriptionRepo.findOne({ where: { user: { id: user.id }, status: SubscriptionStatus.ACTIVE } });
+  const existing = await AppDataSource.getRepository(Subscription).findOne({
+    where: { user: { id: user.id }, status: SubscriptionStatus.ACTIVE },
+  });
   if (existing) return res.status(409).json({ message: 'O usuário já possui uma assinatura ativa.' });
 
-  const pmRepo = AppDataSource.getRepository(PaymentMethod);
-  const paymentMethod = await pmRepo.save(pmRepo.create({
-    user,
-    type: parsed.data.paymentMethodType,
-    provider: 'demo-tokenized-provider',
-    providerPaymentMethodId: parsed.data.paymentToken,
-    cardBrand: parsed.data.cardBrand ?? null,
-    cardLastFour: parsed.data.cardLastFour ?? null,
-  }));
+  const customerId = await getOrCreateStripeCustomer(user);
+  const session = await stripe.checkout.sessions.create({
+    mode: 'subscription',
+    customer: customerId,
+    client_reference_id: user.id,
+    success_url: `${env.frontendUrl}/confirmacao?session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${env.frontendUrl}/checkout`,
+    line_items: [{ price: plan.stripePriceId, quantity: 1 }],
+    subscription_data: {
+      metadata: { userId: user.id, planId: plan.id },
+    },
+    metadata: { userId: user.id, planId: plan.id },
+  });
 
-  const now = new Date();
-  const nextMonth = new Date(now);
-  nextMonth.setMonth(nextMonth.getMonth() + 1);
+  res.json({
+    url: session.url,
+    nextBillingDate: nextCalendarMonth().toISOString(),
+  });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Falha ao criar checkout Stripe.';
+    return res.status(400).json({ message });
+  }
+});
 
-  const subscription = await subscriptionRepo.save(subscriptionRepo.create({
+subscriptionsRouter.get('/confirm', async (req, res) => {
+  const sessionId = z.string().startsWith('cs_').safeParse(req.query.sessionId);
+  if (!sessionId.success) return res.status(400).json({ message: 'Sessão Stripe inválida.' });
+
+  const stripe = requireStripe();
+  const session = await stripe.checkout.sessions.retrieve(sessionId.data, {
+    expand: ['subscription', 'subscription.default_payment_method'],
+  });
+  if (session.metadata?.userId !== req.auth!.sub) {
+    return res.status(403).json({ message: 'Sessão não pertence a este usuário.' });
+  }
+  if (session.status !== 'complete') {
+    return res.status(402).json({ message: 'Pagamento ainda não confirmado.' });
+  }
+
+  const planId = session.metadata?.planId;
+  if (!planId) return res.status(400).json({ message: 'Sessão sem plano.' });
+  const user = await AppDataSource.getRepository(User).findOneByOrFail({ id: req.auth!.sub });
+  const plan = await AppDataSource.getRepository(Plan).findOneByOrFail({ id: planId });
+  const stripeSubscription = session.subscription as Stripe.Subscription;
+  const pm = stripeSubscription.default_payment_method;
+  const card = typeof pm === 'object' && pm && 'card' in pm ? pm.card : undefined;
+
+  const subscription = await upsertLocalSubscription({
     user,
     plan,
-    status: parsed.data.simulateDecline ? SubscriptionStatus.PAYMENT_FAILED : SubscriptionStatus.ACTIVE,
-    startedAt: parsed.data.simulateDecline ? null : now,
-    currentPeriodStart: parsed.data.simulateDecline ? null : now,
-    currentPeriodEnd: parsed.data.simulateDecline ? null : nextMonth,
-    cancelledAt: null,
-    gatewayCustomerId: `cus_demo_${user.id.slice(0, 8)}`,
-    gatewaySubscriptionId: `sub_demo_${crypto.randomUUID().slice(0, 8)}`,
-  }));
+    stripeSubscription,
+    paymentMethod: {
+      stripeId: typeof pm === 'string' ? pm : pm?.id,
+      brand: card?.brand,
+      last4: card?.last4,
+    },
+  });
+  await auditSubscription(user.id, subscription.id, 'SUBSCRIPTION_CREATED');
 
-  const invoiceRepo = AppDataSource.getRepository(Invoice);
-  const invoice = await invoiceRepo.save(invoiceRepo.create({
+  res.json({
     subscription,
-    amountCents: plan.monthlyPriceCents,
-    status: parsed.data.simulateDecline ? InvoiceStatus.FAILED : InvoiceStatus.PAID,
-    dueDate: now,
-    paidAt: parsed.data.simulateDecline ? null : now,
-    gatewayInvoiceId: `inv_demo_${crypto.randomUUID().slice(0, 8)}`,
-  }));
-
-  const attemptRepo = AppDataSource.getRepository(PaymentAttempt);
-  await attemptRepo.save(attemptRepo.create({
-    invoice,
-    status: parsed.data.simulateDecline ? PaymentAttemptStatus.DECLINED : PaymentAttemptStatus.APPROVED,
-    failureCode: parsed.data.simulateDecline ? 'demo_card_declined' : null,
-    failureMessage: parsed.data.simulateDecline ? 'Pagamento recusado na simulação.' : null,
-  }));
-
-  await audit({ actorUserId: user.id, action: 'SUBSCRIPTION_CREATED', entity: 'Subscription', entityId: subscription.id, metadata: { planId: plan.id, paymentMethodId: paymentMethod.id } });
-
-  res.status(201).json({ subscription, paymentMethod: { id: paymentMethod.id, type: paymentMethod.type, cardBrand: paymentMethod.cardBrand, cardLastFour: paymentMethod.cardLastFour }, invoice });
+    nextBillingDate: subscription.currentPeriodEnd,
+  });
 });
 
 subscriptionsRouter.get('/me', async (req, res) => {
@@ -94,12 +131,33 @@ subscriptionsRouter.get('/me', async (req, res) => {
 });
 
 subscriptionsRouter.post('/:id/cancel', async (req, res) => {
+  const stripe = requireStripe();
   const repo = AppDataSource.getRepository(Subscription);
   const subscription = await repo.findOne({ where: { id: req.params.id, user: { id: req.auth!.sub } } });
   if (!subscription) return res.status(404).json({ message: 'Assinatura não encontrada.' });
+
+  if (subscription.gatewaySubscriptionId) {
+    await stripe.subscriptions.update(subscription.gatewaySubscriptionId, { cancel_at_period_end: true });
+  }
   subscription.status = SubscriptionStatus.CANCELLED;
   subscription.cancelledAt = new Date();
   await repo.save(subscription);
-  await audit({ actorUserId: req.auth!.sub, action: 'SUBSCRIPTION_CANCELLED', entity: 'Subscription', entityId: subscription.id });
+  await auditSubscription(req.auth!.sub, subscription.id, 'SUBSCRIPTION_CANCELLED');
   res.json(subscription);
 });
+
+export async function applyStripeInvoice(stripeInvoice: Stripe.Invoice) {
+  const parent = stripeInvoice as Stripe.Invoice & {
+    subscription?: string | Stripe.Subscription | null;
+    parent?: { subscription_details?: { subscription?: string } };
+  };
+  const stripeSubscriptionId = typeof parent.subscription === 'string'
+    ? parent.subscription
+    : parent.subscription?.id || parent.parent?.subscription_details?.subscription;
+  if (!stripeSubscriptionId) return;
+  const subscription = await AppDataSource.getRepository(Subscription).findOne({
+    where: { gatewaySubscriptionId: stripeSubscriptionId },
+  });
+  if (!subscription) return;
+  await recordStripeInvoice(stripeInvoice, subscription);
+}

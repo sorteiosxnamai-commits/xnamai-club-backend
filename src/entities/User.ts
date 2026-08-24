@@ -33,6 +33,9 @@ export class User {
   @Column({ type: 'varchar', default: UserRole.CUSTOMER })
   role!: UserRole;
 
+  @Column({ type: 'varchar', nullable: true })
+  stripeCustomerId?: string | null;
+
   @OneToMany(() => Subscription, (subscription) => subscription.user)
   subscriptions!: Subscription[];
 
