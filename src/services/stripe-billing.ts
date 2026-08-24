@@ -105,17 +105,32 @@ export async function syncStripeInvoices(subscription: Subscription) {
   }
 }
 
+export async function syncAllStripeInvoices(limit = 100) {
+  if (!stripe) return;
+  const subscriptions = await AppDataSource.getRepository(Subscription).find({ take: limit });
+  for (const subscription of subscriptions) {
+    if (!subscription.gatewaySubscriptionId) continue;
+    try {
+      await syncStripeInvoices(subscription);
+    } catch (error) {
+      console.error(`Falha ao sincronizar faturas Stripe (${subscription.id}):`, error);
+    }
+  }
+}
+
 export async function recordStripeInvoice(stripeInvoice: Stripe.Invoice, subscription: Subscription) {
   const invoiceRepo = AppDataSource.getRepository(Invoice);
   const existing = await invoiceRepo.findOne({ where: { gatewayInvoiceId: stripeInvoice.id } });
+  const previousStatus = existing?.status;
   const paid = stripeInvoice.status === 'paid';
+  const open = stripeInvoice.status === 'open' || stripeInvoice.status === 'draft';
   const invoice = existing ?? invoiceRepo.create({
     subscription,
     gatewayInvoiceId: stripeInvoice.id ?? null,
   });
   invoice.subscription = subscription;
   invoice.amountCents = stripeInvoice.amount_paid || stripeInvoice.amount_due || 0;
-  invoice.status = paid ? InvoiceStatus.PAID : stripeInvoice.status === 'open' ? InvoiceStatus.PENDING : InvoiceStatus.FAILED;
+  invoice.status = paid ? InvoiceStatus.PAID : open ? InvoiceStatus.PENDING : InvoiceStatus.FAILED;
   invoice.dueDate = stripeInvoice.due_date
     ? new Date(stripeInvoice.due_date * 1000)
     : new Date(stripeInvoice.created * 1000);
@@ -124,6 +139,11 @@ export async function recordStripeInvoice(stripeInvoice: Stripe.Invoice, subscri
     : paid ? new Date() : null;
   invoice.gatewayInvoiceId = stripeInvoice.id ?? null;
   await invoiceRepo.save(invoice);
+
+  const shouldLogAttempt =
+    (paid && previousStatus !== InvoiceStatus.PAID)
+    || (!paid && !open && previousStatus !== InvoiceStatus.FAILED);
+  if (!shouldLogAttempt) return;
 
   const attemptRepo = AppDataSource.getRepository(PaymentAttempt);
   await attemptRepo.save(attemptRepo.create({

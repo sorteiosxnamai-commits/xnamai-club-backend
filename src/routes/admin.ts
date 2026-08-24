@@ -7,48 +7,105 @@ import { User, UserRole } from '../entities/User';
 import { Plan } from '../entities/Plan';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
 import { Invoice, InvoiceStatus } from '../entities/Invoice';
-import { PaymentAttempt, PaymentAttemptStatus } from '../entities/PaymentAttempt';
+import { syncAllStripeInvoices } from '../services/stripe-billing';
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole(UserRole.ADMIN));
 
+const MONTHS_PT = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+
+function saoPauloYearMonth(date = new Date(), monthOffset = 0) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: 'numeric' })
+      .formatToParts(date)
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value]),
+  );
+  let year = Number(parts.year);
+  let monthIndex = Number(parts.month) - 1 + monthOffset;
+  year += Math.floor(monthIndex / 12);
+  monthIndex = ((monthIndex % 12) + 12) % 12;
+  return { year, monthIndex };
+}
+
 function monthRange(offset = 0) {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth() + offset, 1);
-  const end = new Date(now.getFullYear(), now.getMonth() + offset + 1, 1);
-  return { start, end };
+  const current = saoPauloYearMonth(new Date(), offset);
+  const next = saoPauloYearMonth(new Date(), offset + 1);
+  return {
+    start: new Date(Date.UTC(current.year, current.monthIndex, 1, 3, 0, 0, 0)),
+    end: new Date(Date.UTC(next.year, next.monthIndex, 1, 3, 0, 0, 0)),
+    year: current.year,
+    monthIndex: current.monthIndex,
+    label: MONTHS_PT[current.monthIndex],
+    key: `${current.year}-${String(current.monthIndex + 1).padStart(2, '0')}`,
+  };
+}
+
+function lastMonths(count = 6) {
+  return Array.from({ length: count }, (_, index) => monthRange(index - (count - 1)));
+}
+
+function sumPaidInRange(invoices: Invoice[], start: Date, end: Date) {
+  return invoices.reduce((sum, invoice) => {
+    const paidAt = invoice.paidAt ?? invoice.createdAt;
+    if (paidAt >= start && paidAt < end) return sum + invoice.amountCents;
+    return sum;
+  }, 0);
 }
 
 adminRouter.get('/dashboard', async (_req, res) => {
+  try {
+    await syncAllStripeInvoices();
+  } catch (error) {
+    console.error('Falha ao sincronizar faturas Stripe no dashboard admin:', error);
+  }
+
   const subscriptionRepo = AppDataSource.getRepository(Subscription);
   const invoiceRepo = AppDataSource.getRepository(Invoice);
-  const attemptRepo = AppDataSource.getRepository(PaymentAttempt);
 
   const activeSubscribers = await subscriptionRepo.count({ where: { status: SubscriptionStatus.ACTIVE } });
   const billableStatuses = [SubscriptionStatus.ACTIVE, SubscriptionStatus.PAYMENT_FAILED, SubscriptionStatus.PAST_DUE];
   const billable = await subscriptionRepo.count({ where: { status: In(billableStatuses) } });
   const pastDue = await subscriptionRepo.count({ where: { status: In([SubscriptionStatus.PAYMENT_FAILED, SubscriptionStatus.PAST_DUE]) } });
   const complianceRate = billable === 0 ? 100 : ((billable - pastDue) / billable) * 100;
-  const rejectedPayments = await attemptRepo.count({ where: { status: PaymentAttemptStatus.DECLINED } });
 
-  const current = monthRange(0);
-  const previous = monthRange(-1);
-  const currentInvoices = await invoiceRepo.find({ where: { status: InvoiceStatus.PAID, paidAt: Between(current.start, current.end) } });
-  const previousInvoices = await invoiceRepo.find({ where: { status: InvoiceStatus.PAID, paidAt: Between(previous.start, previous.end) } });
-  const monthlyRevenueCents = currentInvoices.reduce((sum, invoice) => sum + invoice.amountCents, 0);
-  const previousRevenueCents = previousInvoices.reduce((sum, invoice) => sum + invoice.amountCents, 0);
-  const growthPercent = previousRevenueCents === 0 ? (monthlyRevenueCents > 0 ? 100 : 0) : ((monthlyRevenueCents - previousRevenueCents) / previousRevenueCents) * 100;
+  const months = lastMonths(6);
+  const current = months[months.length - 1];
+  const previous = months[months.length - 2];
+  const paidInvoices = await invoiceRepo
+    .createQueryBuilder('invoice')
+    .where('invoice.status = :status', { status: InvoiceStatus.PAID })
+    .andWhere('COALESCE(invoice.paidAt, invoice.createdAt) >= :start', { start: months[0].start })
+    .andWhere('COALESCE(invoice.paidAt, invoice.createdAt) < :end', { end: current.end })
+    .getMany();
+  const monthlyRevenueCents = sumPaidInRange(paidInvoices, current.start, current.end);
+  const previousRevenueCents = sumPaidInRange(paidInvoices, previous.start, previous.end);
+  const growthPercent = previousRevenueCents === 0
+    ? (monthlyRevenueCents > 0 ? 100 : 0)
+    : Number((((monthlyRevenueCents - previousRevenueCents) / previousRevenueCents) * 100).toFixed(1));
 
-  // If the demo database has no paid volume yet, use the prototype target numbers so the dashboard is visually useful.
-  const isEmptyDemo = monthlyRevenueCents === 0 && activeSubscribers === 0;
+  const rejectedPayments = await invoiceRepo.count({
+    where: { status: InvoiceStatus.FAILED, createdAt: Between(current.start, current.end) },
+  });
+  const newSubscribers = await subscriptionRepo.count({
+    where: { createdAt: Between(current.start, current.end) },
+  });
+
+  const revenueByMonth = months.map((month) => ({
+    key: month.key,
+    label: month.label,
+    revenueCents: sumPaidInRange(paidInvoices, month.start, month.end),
+  }));
 
   res.json({
-    activeSubscribers: isEmptyDemo ? 1284 : activeSubscribers,
-    complianceRate: isEmptyDemo ? 96.8 : Number(complianceRate.toFixed(1)),
-    rejectedPayments: isEmptyDemo ? 23 : rejectedPayments,
-    monthlyRevenueCents: isEmptyDemo ? 17_849_900 : monthlyRevenueCents,
-    growthPercent: isEmptyDemo ? 14.8 : Number(growthPercent.toFixed(1)),
-    newSubscribers: isEmptyDemo ? 362 : await subscriptionRepo.count({ where: { createdAt: Between(current.start, current.end) } }),
+    activeSubscribers,
+    complianceRate: Number(complianceRate.toFixed(1)),
+    rejectedPayments,
+    monthlyRevenueCents,
+    previousRevenueCents,
+    growthPercent,
+    newSubscribers,
+    revenueByMonth,
   });
 });
 
