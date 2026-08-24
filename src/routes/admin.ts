@@ -109,17 +109,97 @@ adminRouter.get('/dashboard', async (_req, res) => {
   });
 });
 
+function customerSummary(user?: User | null) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    companyName: user.companyName ?? null,
+    phone: user.phone ?? null,
+  };
+}
+
+function planSummary(plan?: Plan | null) {
+  if (!plan) return null;
+  return {
+    id: plan.id,
+    code: plan.code,
+    name: plan.name,
+    monthlyPriceCents: plan.monthlyPriceCents,
+  };
+}
+
 adminRouter.get('/subscriptions', async (_req, res) => {
-  res.json(await AppDataSource.getRepository(Subscription).find({ order: { createdAt: 'DESC' }, take: 100 }));
+  const rows = await AppDataSource.getRepository(Subscription).find({
+    order: { createdAt: 'DESC' },
+    take: 100,
+    relations: ['user', 'plan'],
+  });
+  res.json(rows.map((subscription) => ({
+    id: subscription.id,
+    status: subscription.status,
+    startedAt: subscription.startedAt,
+    currentPeriodStart: subscription.currentPeriodStart,
+    currentPeriodEnd: subscription.currentPeriodEnd,
+    cancelledAt: subscription.cancelledAt,
+    createdAt: subscription.createdAt,
+    gatewaySubscriptionId: subscription.gatewaySubscriptionId,
+    plan: planSummary(subscription.plan),
+    customer: customerSummary(subscription.user),
+  })));
 });
 
 adminRouter.get('/customers', async (_req, res) => {
-  const users = await AppDataSource.getRepository(User).find({ where: { role: UserRole.CUSTOMER }, order: { createdAt: 'DESC' }, take: 100 });
-  res.json(users.map(({ passwordHash: _passwordHash, ...safeUser }) => safeUser));
+  const users = await AppDataSource.getRepository(User).find({
+    where: { role: UserRole.CUSTOMER },
+    order: { createdAt: 'DESC' },
+    take: 100,
+    relations: ['subscriptions', 'subscriptions.plan'],
+  });
+  res.json(users.map((user) => {
+    const latest = [...(user.subscriptions ?? [])].sort(
+      (a, b) => +new Date(b.createdAt) - +new Date(a.createdAt),
+    )[0];
+    return {
+      ...customerSummary(user),
+      document: user.document ?? null,
+      createdAt: user.createdAt,
+      subscription: latest
+        ? {
+            id: latest.id,
+            status: latest.status,
+            currentPeriodEnd: latest.currentPeriodEnd,
+            plan: planSummary(latest.plan),
+          }
+        : null,
+    };
+  }));
 });
 
 adminRouter.get('/payments', async (_req, res) => {
-  res.json(await AppDataSource.getRepository(Invoice).find({ order: { createdAt: 'DESC' }, take: 100 }));
+  try {
+    await syncAllStripeInvoices();
+  } catch (error) {
+    console.error('Falha ao sincronizar faturas Stripe nas cobranças admin:', error);
+  }
+
+  const rows = await AppDataSource.getRepository(Invoice).find({
+    order: { createdAt: 'DESC' },
+    take: 100,
+    relations: ['subscription', 'subscription.user', 'subscription.plan'],
+  });
+  res.json(rows.map((invoice) => ({
+    id: invoice.id,
+    amountCents: invoice.amountCents,
+    status: invoice.status,
+    dueDate: invoice.dueDate,
+    paidAt: invoice.paidAt,
+    createdAt: invoice.createdAt,
+    gatewayInvoiceId: invoice.gatewayInvoiceId,
+    plan: planSummary(invoice.subscription?.plan),
+    customer: customerSummary(invoice.subscription?.user),
+  })));
 });
 
 adminRouter.get('/plans', async (_req, res) => {
