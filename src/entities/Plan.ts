@@ -27,6 +27,9 @@ export class Plan {
   @Column({ type: 'integer', default: 0 })
   sortOrder!: number;
 
+  @Column({ type: 'varchar', nullable: true })
+  stripePriceId!: string | null;
+
   @OneToMany(() => Subscription, (subscription) => subscription.plan)
   subscriptions!: Subscription[];
 

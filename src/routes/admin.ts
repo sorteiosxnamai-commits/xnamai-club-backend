@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { Between, In } from 'typeorm';
+import { z } from 'zod';
 import { AppDataSource } from '../config/data-source';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { User, UserRole } from '../entities/User';
+import { Plan } from '../entities/Plan';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
 import { Invoice, InvoiceStatus } from '../entities/Invoice';
 import { PaymentAttempt, PaymentAttemptStatus } from '../entities/PaymentAttempt';
@@ -61,4 +63,26 @@ adminRouter.get('/customers', async (_req, res) => {
 
 adminRouter.get('/payments', async (_req, res) => {
   res.json(await AppDataSource.getRepository(Invoice).find({ order: { createdAt: 'DESC' }, take: 100 }));
+});
+
+adminRouter.get('/plans', async (_req, res) => {
+  res.json(await AppDataSource.getRepository(Plan).find({ order: { sortOrder: 'ASC' } }));
+});
+
+const updatePlanSchema = z.object({
+  stripePriceId: z.string().min(3).nullable().optional(),
+  monthlyPriceCents: z.number().int().nonnegative().nullable().optional(),
+  active: z.boolean().optional(),
+});
+
+adminRouter.patch('/plans/:id', async (req, res) => {
+  const parsed = updatePlanSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: 'Dados inválidos.', issues: parsed.error.flatten() });
+
+  const planRepo = AppDataSource.getRepository(Plan);
+  const plan = await planRepo.findOne({ where: { id: req.params.id } });
+  if (!plan) return res.status(404).json({ message: 'Plano não encontrado.' });
+
+  Object.assign(plan, parsed.data);
+  res.json(await planRepo.save(plan));
 });

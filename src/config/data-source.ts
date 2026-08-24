@@ -14,6 +14,12 @@ const entities = [User, Plan, Subscription, PaymentMethod, Invoice, PaymentAttem
 const dbType = (process.env.DB_TYPE || 'sqlite').toLowerCase();
 const synchronize = (process.env.TYPEORM_SYNCHRONIZE || 'true') === 'true';
 
+function shouldUseSsl(host: string) {
+  if (process.env.DB_SSL === 'true') return true;
+  if (process.env.DB_SSL === 'false') return false;
+  return host.includes('supabase.co') || host.includes('pooler.supabase.com');
+}
+
 function createDataSource(): DataSource {
   if (dbType === 'postgres') {
     return new DataSource({
@@ -23,6 +29,9 @@ function createDataSource(): DataSource {
       username: process.env.DB_USER || 'postgres',
       password: process.env.DB_PASSWORD || 'postgres',
       database: process.env.DB_NAME || 'xnamai_club',
+      ssl: shouldUseSsl(process.env.DB_HOST || 'localhost')
+        ? { rejectUnauthorized: false }
+        : false,
       synchronize,
       logging: false,
       entities,

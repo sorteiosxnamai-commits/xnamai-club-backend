@@ -8,6 +8,9 @@
     "build": "tsc -p tsconfig.json",
     "start:prod": "node dist/server.js"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
