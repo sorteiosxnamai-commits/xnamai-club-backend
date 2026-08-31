@@ -4,6 +4,17 @@ import { stripe } from '../config/stripe';
 import { Plan } from '../entities/Plan';
 import { User, UserRole } from '../entities/User';
 
+const LAUNCH_PLAN = {
+  code: 'LAUNCH',
+  name: 'Plano Lançamento',
+  monthlyPriceCents: 14997,
+  compareAtPriceCents: 29997,
+  purchaseLimitCents: null as number | null,
+  description: 'Oferta de lançamento: acesso completo ao XNaMai Club.',
+  active: true,
+  sortOrder: 1,
+};
+
 async function ensureStripePrices() {
   if (!stripe) {
     console.warn('Stripe: STRIPE_SECRET_KEY ausente — Price IDs não serão criados.');
@@ -11,7 +22,7 @@ async function ensureStripePrices() {
   }
 
   const planRepo = AppDataSource.getRepository(Plan);
-  const plans = await planRepo.find();
+  const plans = await planRepo.find({ where: { active: true } });
   for (const plan of plans) {
     if (plan.monthlyPriceCents == null) continue;
 
@@ -43,25 +54,35 @@ async function ensureStripePrices() {
   }
 }
 
-export async function seedInitialData() {
+async function syncLaunchPlan() {
   const planRepo = AppDataSource.getRepository(Plan);
-  if (await planRepo.count() === 0) {
-    await planRepo.save([
-      planRepo.create({ code: 'START', name: 'Plano Start', monthlyPriceCents: 100, purchaseLimitCents: 1_000_000, description: 'Para compras de até R$ 10 mil por mês', sortOrder: 1 }),
-      planRepo.create({ code: 'GROWTH', name: 'Plano Growth', monthlyPriceCents: 29990, purchaseLimitCents: 2_500_000, description: 'Para compras de até R$ 25 mil por mês', sortOrder: 2 }),
-      planRepo.create({ code: 'PRO', name: 'Plano Pro', monthlyPriceCents: 49900, purchaseLimitCents: 5_000_000, description: 'Para compras de até R$ 50 mil por mês', sortOrder: 3 }),
-      planRepo.create({ code: 'MAX', name: 'Plano Max', monthlyPriceCents: 99900, purchaseLimitCents: 10_000_000, description: 'Para compras de até R$ 100 mil por mês', sortOrder: 4 }),
-      planRepo.create({ code: 'ENTERPRISE', name: 'Enterprise', monthlyPriceCents: null, purchaseLimitCents: null, description: 'Para compras acima de R$ 100 mil por mês', sortOrder: 5 }),
-    ]);
+  let launch = await planRepo.findOne({ where: { code: LAUNCH_PLAN.code } });
+  if (!launch) {
+    launch = planRepo.create(LAUNCH_PLAN);
   } else {
-    const startPlan = await planRepo.findOne({ where: { code: 'START' } });
-    if (startPlan && startPlan.monthlyPriceCents !== 100) {
-      startPlan.monthlyPriceCents = 100;
-      startPlan.stripePriceId = null;
-      await planRepo.save(startPlan);
-    }
+    const priceChanged = launch.monthlyPriceCents !== LAUNCH_PLAN.monthlyPriceCents;
+    launch.name = LAUNCH_PLAN.name;
+    launch.monthlyPriceCents = LAUNCH_PLAN.monthlyPriceCents;
+    launch.compareAtPriceCents = LAUNCH_PLAN.compareAtPriceCents;
+    launch.purchaseLimitCents = LAUNCH_PLAN.purchaseLimitCents;
+    launch.description = LAUNCH_PLAN.description;
+    launch.active = true;
+    launch.sortOrder = LAUNCH_PLAN.sortOrder;
+    if (priceChanged) launch.stripePriceId = null;
   }
+  await planRepo.save(launch);
 
+  const others = await planRepo.find();
+  for (const plan of others) {
+    if (plan.code === LAUNCH_PLAN.code || !plan.active) continue;
+    plan.active = false;
+    await planRepo.save(plan);
+    console.log(`Plano desativado para o lançamento: ${plan.code}`);
+  }
+}
+
+export async function seedInitialData() {
+  await syncLaunchPlan();
   await ensureStripePrices();
 
   const userRepo = AppDataSource.getRepository(User);

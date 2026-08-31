@@ -16,6 +16,9 @@ export class Plan {
   monthlyPriceCents!: number | null;
 
   @Column({ type: 'integer', nullable: true })
+  compareAtPriceCents!: number | null;
+
+  @Column({ type: 'integer', nullable: true })
   purchaseLimitCents!: number | null;
 
   @Column({ type: 'text', default: '' })
