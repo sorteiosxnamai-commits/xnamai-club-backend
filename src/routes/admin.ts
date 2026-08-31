@@ -8,6 +8,7 @@ import { Plan } from '../entities/Plan';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
 import { Invoice, InvoiceStatus } from '../entities/Invoice';
 import { syncAllStripeInvoices } from '../services/stripe-billing';
+import { buildRevenueForecast } from '../services/revenue-forecast';
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole(UserRole.ADMIN));
@@ -96,6 +97,7 @@ adminRouter.get('/dashboard', async (_req, res) => {
     label: month.label,
     revenueCents: sumPaidInRange(paidInvoices, month.start, month.end),
   }));
+  const forecast = await buildRevenueForecast();
 
   res.json({
     activeSubscribers,
@@ -106,6 +108,10 @@ adminRouter.get('/dashboard', async (_req, res) => {
     growthPercent,
     newSubscribers,
     revenueByMonth,
+    nextMonthForecastCents: forecast.nextMonthForecastCents,
+    yearForecastCents: forecast.yearForecastCents,
+    forecastSubscribers: forecast.forecastSubscribers,
+    forecastByMonth: forecast.forecastByMonth,
   });
 });
 
@@ -189,17 +195,25 @@ adminRouter.get('/payments', async (_req, res) => {
     take: 100,
     relations: ['subscription', 'subscription.user', 'subscription.plan'],
   });
-  res.json(rows.map((invoice) => ({
-    id: invoice.id,
-    amountCents: invoice.amountCents,
-    status: invoice.status,
-    dueDate: invoice.dueDate,
-    paidAt: invoice.paidAt,
-    createdAt: invoice.createdAt,
-    gatewayInvoiceId: invoice.gatewayInvoiceId,
-    plan: planSummary(invoice.subscription?.plan),
-    customer: customerSummary(invoice.subscription?.user),
-  })));
+  const forecast = await buildRevenueForecast();
+  res.json({
+    nextMonthForecastCents: forecast.nextMonthForecastCents,
+    yearForecastCents: forecast.yearForecastCents,
+    forecastSubscribers: forecast.forecastSubscribers,
+    forecastByMonth: forecast.forecastByMonth,
+    upcoming: forecast.upcomingCharges,
+    invoices: rows.map((invoice) => ({
+      id: invoice.id,
+      amountCents: invoice.amountCents,
+      status: invoice.status,
+      dueDate: invoice.dueDate,
+      paidAt: invoice.paidAt,
+      createdAt: invoice.createdAt,
+      gatewayInvoiceId: invoice.gatewayInvoiceId,
+      plan: planSummary(invoice.subscription?.plan),
+      customer: customerSummary(invoice.subscription?.user),
+    })),
+  });
 });
 
 adminRouter.get('/plans', async (_req, res) => {
