@@ -22,9 +22,19 @@ function nextCalendarMonth(from = new Date()) {
 async function getOrCreateStripeCustomer(user: User) {
   const stripe = requireStripe();
   const userRepo = AppDataSource.getRepository(User);
+
   if (user.stripeCustomerId) {
-    return user.stripeCustomerId;
+    try {
+      const existing = await stripe.customers.retrieve(user.stripeCustomerId);
+      if (!('deleted' in existing && existing.deleted)) {
+        return user.stripeCustomerId;
+      }
+    } catch (error) {
+      console.warn(`Stripe customer ${user.stripeCustomerId} inválido para ${user.email}. Recriando.`, error);
+    }
+    user.stripeCustomerId = null;
   }
+
   const customer = await stripe.customers.create({
     email: user.email,
     name: user.companyName || user.name,
@@ -75,6 +85,7 @@ subscriptionsRouter.post('/checkout', async (req, res) => {
     nextBillingDate: nextCalendarMonth().toISOString(),
   });
   } catch (error) {
+    console.error('Falha no checkout Stripe:', error);
     const message = error instanceof Error ? error.message : 'Falha ao criar checkout Stripe.';
     return res.status(400).json({ message });
   }
