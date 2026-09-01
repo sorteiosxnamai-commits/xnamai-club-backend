@@ -5,6 +5,7 @@ import { PaymentMethod } from './PaymentMethod';
 export enum UserRole {
   CUSTOMER = 'CUSTOMER',
   ADMIN = 'ADMIN',
+  SUPPORT = 'SUPPORT',
 }
 
 @Entity('users')
@@ -41,6 +42,12 @@ export class User {
 
   @Column({ type: 'varchar', nullable: true })
   stripeCustomerId?: string | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  launchCashbackUsedAt!: Date | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  launchCashbackUsedById!: string | null;
 
   @OneToMany(() => Subscription, (subscription) => subscription.user)
   subscriptions!: Subscription[];

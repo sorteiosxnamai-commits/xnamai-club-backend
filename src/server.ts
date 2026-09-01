@@ -11,6 +11,7 @@ import { plansRouter } from './routes/plans';
 import { subscriptionsRouter } from './routes/subscriptions';
 import { customerRouter } from './routes/customer';
 import { adminRouter } from './routes/admin';
+import { atendimentoRouter } from './routes/atendimento';
 import { webhooksRouter, stripeWebhookHandler } from './routes/webhooks';
 
 function normalizeOrigin(value: string): string {
@@ -85,6 +86,7 @@ async function bootstrap() {
   api.use('/subscriptions', subscriptionsRouter);
   api.use('/me', customerRouter);
   api.use('/admin', adminRouter);
+  api.use('/atendimento', atendimentoRouter);
   api.use('/webhooks', webhooksRouter);
   app.use('/api', api);
   app.use(api);

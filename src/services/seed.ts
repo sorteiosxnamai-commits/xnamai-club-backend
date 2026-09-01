@@ -110,4 +110,28 @@ export async function seedInitialData() {
     await userRepo.save(admin);
     console.log(`Admin sincronizado: ${adminEmail}`);
   }
+
+  const supportEmail = (process.env.SUPPORT_EMAIL || 'atendimento@xnamai.local').toLowerCase();
+  const supportPassword = process.env.SUPPORT_PASSWORD || 'Atende123!';
+  const supportHash = await bcrypt.hash(supportPassword, 12);
+  let support = await userRepo.findOne({ where: { email: supportEmail } });
+  if (!support) {
+    support = await userRepo.findOne({ where: { role: UserRole.SUPPORT } });
+  }
+  if (!support) {
+    await userRepo.save(userRepo.create({
+      email: supportEmail,
+      name: 'Atendimento XNaMai',
+      companyName: 'XNaMai',
+      passwordHash: supportHash,
+      role: UserRole.SUPPORT,
+    }));
+    console.log(`Atendimento criado: ${supportEmail}`);
+  } else {
+    support.email = supportEmail;
+    support.role = UserRole.SUPPORT;
+    support.passwordHash = supportHash;
+    await userRepo.save(support);
+    console.log(`Atendimento sincronizado: ${supportEmail}`);
+  }
 }
