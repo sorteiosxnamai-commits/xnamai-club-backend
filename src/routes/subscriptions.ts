@@ -148,14 +148,28 @@ subscriptionsRouter.post('/:id/cancel', async (req, res) => {
   const subscription = await repo.findOne({ where: { id: req.params.id, user: { id: req.auth!.sub } } });
   if (!subscription) return res.status(404).json({ message: 'Assinatura não encontrada.' });
 
-  if (subscription.gatewaySubscriptionId) {
-    await stripe.subscriptions.update(subscription.gatewaySubscriptionId, { cancel_at_period_end: true });
+  if (subscription.status === SubscriptionStatus.CANCELLED) {
+    return res.status(409).json({ message: 'Esta assinatura já está cancelada.' });
   }
-  subscription.status = SubscriptionStatus.CANCELLED;
-  subscription.cancelledAt = new Date();
-  await repo.save(subscription);
-  await auditSubscription(req.auth!.sub, subscription.id, 'SUBSCRIPTION_CANCELLED');
-  res.json(subscription);
+  if (subscription.cancelledAt) {
+    return res.status(409).json({ message: 'O cancelamento já foi solicitado. O acesso permanece até o fim do período pago.' });
+  }
+
+  try {
+    if (subscription.gatewaySubscriptionId) {
+      await stripe.subscriptions.update(subscription.gatewaySubscriptionId, { cancel_at_period_end: true });
+    } else {
+      subscription.status = SubscriptionStatus.CANCELLED;
+    }
+    subscription.cancelledAt = new Date();
+    await repo.save(subscription);
+    await auditSubscription(req.auth!.sub, subscription.id, 'SUBSCRIPTION_CANCELLED');
+    res.json(subscription);
+  } catch (error) {
+    console.error('Falha ao cancelar assinatura Stripe:', error);
+    const message = error instanceof Error ? error.message : 'Falha ao cancelar a assinatura.';
+    return res.status(400).json({ message });
+  }
 });
 
 export async function applyStripeInvoice(stripeInvoice: Stripe.Invoice) {

@@ -65,9 +65,13 @@ export async function upsertLocalSubscription(params: {
   subscription.startedAt = status === SubscriptionStatus.ACTIVE ? periodStart : subscription.startedAt;
   subscription.currentPeriodStart = periodStart;
   subscription.currentPeriodEnd = periodEnd;
-  subscription.cancelledAt = stripeSubscription.canceled_at
-    ? new Date(stripeSubscription.canceled_at * 1000)
-    : null;
+  if (stripeSubscription.canceled_at) {
+    subscription.cancelledAt = new Date(stripeSubscription.canceled_at * 1000);
+  } else if (stripeSubscription.cancel_at_period_end) {
+    subscription.cancelledAt = subscription.cancelledAt ?? new Date();
+  } else {
+    subscription.cancelledAt = null;
+  }
   subscription.gatewayCustomerId = typeof stripeSubscription.customer === 'string'
     ? stripeSubscription.customer
     : stripeSubscription.customer.id;

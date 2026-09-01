@@ -91,6 +91,7 @@ export async function buildRevenueForecast() {
   const upcoming: UpcomingCharge[] = [];
   let monthlyRecurringCents = 0;
   for (const subscription of subscriptions) {
+    if (subscription.cancelledAt) continue;
     const amountCents = subscription.plan?.monthlyPriceCents ?? 0;
     if (amountCents <= 0) continue;
     monthlyRecurringCents += amountCents;
