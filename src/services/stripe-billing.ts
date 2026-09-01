@@ -34,13 +34,45 @@ function mapStripeStatus(status: Stripe.Subscription.Status): SubscriptionStatus
   return SubscriptionStatus.PAYMENT_FAILED;
 }
 
+function paymentDetailsFromStripe(params: {
+  stripeSubscription: Stripe.Subscription;
+  paymentMethod?: { brand?: string | null; last4?: string | null; stripeId?: string | null; type?: PaymentMethodType };
+}) {
+  const fallbackType = params.stripeSubscription.metadata?.paymentMethodType === 'PIX_RECURRING'
+    ? PaymentMethodType.PIX_RECURRING
+    : PaymentMethodType.CREDIT_CARD;
+  if (params.paymentMethod?.stripeId || params.paymentMethod?.type) {
+    return {
+      stripeId: params.paymentMethod.stripeId ?? null,
+      brand: params.paymentMethod.brand ?? null,
+      last4: params.paymentMethod.last4 ?? null,
+      type: params.paymentMethod.type ?? fallbackType,
+    };
+  }
+
+  const pm = params.stripeSubscription.default_payment_method;
+  if (!pm || typeof pm === 'string') {
+    return { stripeId: typeof pm === 'string' ? pm : null, brand: null, last4: null, type: fallbackType };
+  }
+
+  const isPix = (pm as { type?: string }).type === 'pix';
+  const card = 'card' in pm ? pm.card : undefined;
+  return {
+    stripeId: pm.id,
+    brand: card?.brand ?? null,
+    last4: card?.last4 ?? null,
+    type: isPix ? PaymentMethodType.PIX_RECURRING : fallbackType,
+  };
+}
+
 export async function upsertLocalSubscription(params: {
   user: User;
   plan: Plan;
   stripeSubscription: Stripe.Subscription;
-  paymentMethod?: { brand?: string | null; last4?: string | null; stripeId?: string | null };
+  paymentMethod?: { brand?: string | null; last4?: string | null; stripeId?: string | null; type?: PaymentMethodType };
 }) {
-  const { user, plan, stripeSubscription, paymentMethod } = params;
+  const { user, plan, stripeSubscription } = params;
+  const paymentMethod = paymentDetailsFromStripe(params);
   const { start: periodStart, end: periodEnd } = billingPeriod(stripeSubscription);
   const status = mapStripeStatus(stripeSubscription.status);
 
@@ -84,7 +116,7 @@ export async function upsertLocalSubscription(params: {
     if (!existing) {
       await pmRepo.save(pmRepo.create({
         user,
-        type: PaymentMethodType.CREDIT_CARD,
+        type: paymentMethod.type,
         provider: 'stripe',
         providerPaymentMethodId: paymentMethod.stripeId,
         cardBrand: paymentMethod.brand ?? null,

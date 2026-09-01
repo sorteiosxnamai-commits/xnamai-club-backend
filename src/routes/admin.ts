@@ -9,6 +9,7 @@ import { Subscription, SubscriptionStatus } from '../entities/Subscription';
 import { Invoice, InvoiceStatus } from '../entities/Invoice';
 import { syncAllStripeInvoices } from '../services/stripe-billing';
 import { buildRevenueForecast } from '../services/revenue-forecast';
+import { fetchFrontendVercelLogs } from '../services/vercel-logs';
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole(UserRole.ADMIN));
@@ -122,6 +123,9 @@ function customerSummary(user?: User | null) {
     name: user.name,
     email: user.email,
     companyName: user.companyName ?? null,
+    document: user.document ?? null,
+    city: user.city ?? null,
+    state: user.state ?? null,
     phone: user.phone ?? null,
   };
 }
@@ -169,7 +173,6 @@ adminRouter.get('/customers', async (_req, res) => {
     )[0];
     return {
       ...customerSummary(user),
-      document: user.document ?? null,
       createdAt: user.createdAt,
       subscription: latest
         ? {
@@ -236,4 +239,14 @@ adminRouter.patch('/plans/:id', async (req, res) => {
 
   Object.assign(plan, parsed.data);
   res.json(await planRepo.save(plan));
+});
+
+adminRouter.get('/vercel-logs', async (req, res) => {
+  const limit = Number(req.query.limit);
+  try {
+    res.json(await fetchFrontendVercelLogs(Number.isFinite(limit) ? limit : 150));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Falha ao buscar logs da Vercel.';
+    res.status(502).json({ message });
+  }
 });

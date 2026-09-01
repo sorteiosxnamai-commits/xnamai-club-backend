@@ -8,6 +8,7 @@ import { requireAuth } from '../middleware/auth';
 import { Plan } from '../entities/Plan';
 import { User } from '../entities/User';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
+import { PaymentMethodType } from '../entities/PaymentMethod';
 import { auditSubscription, recordStripeInvoice, syncStripeInvoices, upsertLocalSubscription } from '../services/stripe-billing';
 
 export const subscriptionsRouter = Router();
@@ -38,7 +39,15 @@ async function getOrCreateStripeCustomer(user: User) {
   const customer = await stripe.customers.create({
     email: user.email,
     name: user.companyName || user.name,
-    metadata: { userId: user.id },
+    address: user.city || user.state
+      ? { city: user.city || undefined, state: user.state || undefined, country: 'BR' }
+      : undefined,
+    metadata: {
+      userId: user.id,
+      document: user.document || '',
+      city: user.city || '',
+      state: user.state || '',
+    },
   });
   user.stripeCustomerId = customer.id;
   await userRepo.save(user);
@@ -47,46 +56,95 @@ async function getOrCreateStripeCustomer(user: User) {
 
 const checkoutSchema = z.object({
   planId: z.string().uuid(),
+  paymentMethodType: z.enum(['CREDIT_CARD', 'PIX_RECURRING']).optional().default('CREDIT_CARD'),
 });
+
+function pixCheckoutUnavailableMessage(error: unknown) {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (/pix|excluded_payment_method|payment_method_options|no valid payment method|invalid payment method/i.test(raw)) {
+    return 'PIX recorrente (Pix Automático) não está habilitado nesta conta Stripe. Ative Pix e Pix Automático no Dashboard — contas brasileiras só têm Pix Automático por convite. Enquanto isso, use cartão.';
+  }
+  return raw || 'Falha ao criar checkout Stripe.';
+}
+
+function stripePaymentMethodType(pm: Stripe.Subscription['default_payment_method'], fallback: PaymentMethodType) {
+  if (typeof pm === 'object' && pm && (pm as { type?: string }).type === 'pix') {
+    return PaymentMethodType.PIX_RECURRING;
+  }
+  return fallback;
+}
 
 subscriptionsRouter.post('/checkout', async (req, res) => {
   const parsed = checkoutSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Dados inválidos.', issues: parsed.error.flatten() });
 
+  const { planId, paymentMethodType } = parsed.data;
   try {
     const stripe = requireStripe();
-  const user = await AppDataSource.getRepository(User).findOneByOrFail({ id: req.auth!.sub });
-  const plan = await AppDataSource.getRepository(Plan).findOne({ where: { id: parsed.data.planId, active: true } });
-  if (!plan || !plan.stripePriceId || plan.monthlyPriceCents == null) {
-    return res.status(400).json({ message: 'Plano indisponível para assinatura Stripe.' });
-  }
+    const user = await AppDataSource.getRepository(User).findOneByOrFail({ id: req.auth!.sub });
+    const plan = await AppDataSource.getRepository(Plan).findOne({ where: { id: planId, active: true } });
+    if (!plan || !plan.stripePriceId || plan.monthlyPriceCents == null) {
+      return res.status(400).json({ message: 'Plano indisponível para assinatura Stripe.' });
+    }
 
-  const existing = await AppDataSource.getRepository(Subscription).findOne({
-    where: { user: { id: user.id }, status: SubscriptionStatus.ACTIVE },
-  });
-  if (existing) return res.status(409).json({ message: 'O usuário já possui uma assinatura ativa.' });
+    const existing = await AppDataSource.getRepository(Subscription).findOne({
+      where: { user: { id: user.id }, status: SubscriptionStatus.ACTIVE },
+    });
+    if (existing) return res.status(409).json({ message: 'O usuário já possui uma assinatura ativa.' });
 
-  const customerId = await getOrCreateStripeCustomer(user);
-  const session = await stripe.checkout.sessions.create({
-    mode: 'subscription',
-    customer: customerId,
-    client_reference_id: user.id,
-    success_url: `${env.frontendUrl}/confirmacao?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${env.frontendUrl}/checkout`,
-    line_items: [{ price: plan.stripePriceId, quantity: 1 }],
-    subscription_data: {
-      metadata: { userId: user.id, planId: plan.id },
-    },
-    metadata: { userId: user.id, planId: plan.id },
-  });
+    const customerId = await getOrCreateStripeCustomer(user);
+    const sessionParams: Stripe.Checkout.SessionCreateParams = {
+      mode: 'subscription',
+      customer: customerId,
+      client_reference_id: user.id,
+      locale: 'pt-BR',
+      success_url: `${env.frontendUrl}/confirmacao?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${env.frontendUrl}/checkout`,
+      line_items: [{ price: plan.stripePriceId, quantity: 1 }],
+      subscription_data: {
+        metadata: { userId: user.id, planId: plan.id, paymentMethodType },
+      },
+      metadata: { userId: user.id, planId: plan.id, paymentMethodType },
+    };
 
-  res.json({
-    url: session.url,
-    nextBillingDate: nextCalendarMonth().toISOString(),
-  });
+    if (paymentMethodType === 'PIX_RECURRING') {
+      Object.assign(sessionParams, {
+        excluded_payment_method_types: ['card'],
+        payment_method_options: {
+          pix: {
+            setup_future_usage: 'off_session',
+            mandate_options: {
+              amount: plan.monthlyPriceCents,
+              amount_type: 'fixed',
+              currency: 'brl',
+              payment_schedule: 'monthly',
+              reference: plan.name.slice(0, 35),
+            },
+          },
+        },
+      });
+    }
+
+    const session = await stripe.checkout.sessions.create(sessionParams);
+
+    if (paymentMethodType === 'PIX_RECURRING' && !session.payment_method_types?.includes('pix')) {
+      if (session.id) {
+        try { await stripe.checkout.sessions.expire(session.id); } catch { /* sessão órfã sem PIX */ }
+      }
+      return res.status(400).json({
+        message: 'PIX recorrente (Pix Automático) não está habilitado nesta conta Stripe. Ative Pix e Pix Automático no Dashboard — contas brasileiras só têm Pix Automático por convite. Enquanto isso, use cartão.',
+      });
+    }
+
+    res.json({
+      url: session.url,
+      nextBillingDate: nextCalendarMonth().toISOString(),
+    });
   } catch (error) {
     console.error('Falha no checkout Stripe:', error);
-    const message = error instanceof Error ? error.message : 'Falha ao criar checkout Stripe.';
+    const message = paymentMethodType === 'PIX_RECURRING'
+      ? pixCheckoutUnavailableMessage(error)
+      : error instanceof Error ? error.message : 'Falha ao criar checkout Stripe.';
     return res.status(400).json({ message });
   }
 });
@@ -113,6 +171,9 @@ subscriptionsRouter.get('/confirm', async (req, res) => {
   const stripeSubscription = session.subscription as Stripe.Subscription;
   const pm = stripeSubscription.default_payment_method;
   const card = typeof pm === 'object' && pm && 'card' in pm ? pm.card : undefined;
+  const requestedType = session.metadata?.paymentMethodType === 'PIX_RECURRING'
+    ? PaymentMethodType.PIX_RECURRING
+    : PaymentMethodType.CREDIT_CARD;
 
   const subscription = await upsertLocalSubscription({
     user,
@@ -122,6 +183,7 @@ subscriptionsRouter.get('/confirm', async (req, res) => {
       stripeId: typeof pm === 'string' ? pm : pm?.id,
       brand: card?.brand,
       last4: card?.last4,
+      type: stripePaymentMethodType(pm, requestedType),
     },
   });
   await syncStripeInvoices(subscription);

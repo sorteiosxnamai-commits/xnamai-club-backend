@@ -28,6 +28,12 @@ export class User {
   document?: string;
 
   @Column({ type: 'varchar', nullable: true })
+  city?: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  state?: string;
+
+  @Column({ type: 'varchar', nullable: true })
   phone?: string;
 
   @Column({ type: 'varchar', default: UserRole.CUSTOMER })
