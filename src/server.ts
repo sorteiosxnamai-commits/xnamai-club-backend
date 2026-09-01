@@ -15,9 +15,22 @@ import { webhooksRouter, stripeWebhookHandler } from './routes/webhooks';
 
 async function bootstrap() {
   const app = express();
+  const allowedOrigins = [
+    env.frontendUrl,
+    'http://localhost:5173',
+    'https://xnamai-club-frontend.vercel.app',
+  ].filter(Boolean);
   app.use(cors({
-    origin: env.frontendUrl,
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, origin || allowedOrigins[0]);
+        return;
+      }
+      callback(null, false);
+    },
     credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   }));
   app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), stripeWebhookHandler);
   app.use(express.json({ limit: '1mb' }));
@@ -39,9 +52,16 @@ async function bootstrap() {
   app.use('/api', api);
   app.use(api);
 
-  app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(err);
-    res.status(500).json({ message: 'Erro interno do servidor.' });
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
+    if (!res.headersSent) {
+      res.status(500).json({ message: 'Erro interno do servidor.' });
+    }
   });
 
   await new Promise<void>((resolve) => {

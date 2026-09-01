@@ -142,33 +142,65 @@ subscriptionsRouter.get('/me', async (req, res) => {
   res.json(subscription);
 });
 
+function subscriptionPublicView(subscription: Subscription) {
+  return {
+    id: subscription.id,
+    status: subscription.status,
+    startedAt: subscription.startedAt,
+    currentPeriodStart: subscription.currentPeriodStart,
+    currentPeriodEnd: subscription.currentPeriodEnd,
+    cancelledAt: subscription.cancelledAt,
+    plan: subscription.plan
+      ? {
+          id: subscription.plan.id,
+          name: subscription.plan.name,
+          monthlyPriceCents: subscription.plan.monthlyPriceCents,
+        }
+      : null,
+  };
+}
+
+function isIgnorableStripeCancelError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /no such subscription|already been canceled|subscription is canceled/i.test(message);
+}
+
 subscriptionsRouter.post('/:id/cancel', async (req, res) => {
-  const stripe = requireStripe();
-  const repo = AppDataSource.getRepository(Subscription);
-  const subscription = await repo.findOne({ where: { id: req.params.id, user: { id: req.auth!.sub } } });
-  if (!subscription) return res.status(404).json({ message: 'Assinatura não encontrada.' });
-
-  if (subscription.status === SubscriptionStatus.CANCELLED) {
-    return res.status(409).json({ message: 'Esta assinatura já está cancelada.' });
-  }
-  if (subscription.cancelledAt) {
-    return res.status(409).json({ message: 'O cancelamento já foi solicitado. O acesso permanece até o fim do período pago.' });
-  }
-
   try {
+    const id = z.string().uuid().safeParse(req.params.id);
+    if (!id.success) return res.status(404).json({ message: 'Assinatura não encontrada.' });
+
+    const repo = AppDataSource.getRepository(Subscription);
+    const subscription = await repo.findOne({ where: { id: id.data, user: { id: req.auth!.sub } } });
+    if (!subscription) return res.status(404).json({ message: 'Assinatura não encontrada.' });
+
+    if (subscription.status === SubscriptionStatus.CANCELLED) {
+      return res.status(409).json({ message: 'Esta assinatura já está cancelada.' });
+    }
+    if (subscription.cancelledAt) {
+      return res.status(409).json({ message: 'O cancelamento já foi solicitado. O acesso permanece até o fim do período pago.' });
+    }
+
     if (subscription.gatewaySubscriptionId) {
-      await stripe.subscriptions.update(subscription.gatewaySubscriptionId, { cancel_at_period_end: true });
+      try {
+        const stripe = requireStripe();
+        await stripe.subscriptions.update(subscription.gatewaySubscriptionId, { cancel_at_period_end: true });
+      } catch (error) {
+        if (!isIgnorableStripeCancelError(error)) throw error;
+        console.warn('Stripe já havia encerrado a assinatura; seguindo com cancelamento local.', error);
+        subscription.status = SubscriptionStatus.CANCELLED;
+      }
     } else {
       subscription.status = SubscriptionStatus.CANCELLED;
     }
     subscription.cancelledAt = new Date();
     await repo.save(subscription);
     await auditSubscription(req.auth!.sub, subscription.id, 'SUBSCRIPTION_CANCELLED');
-    res.json(subscription);
+    res.json(subscriptionPublicView(subscription));
   } catch (error) {
     console.error('Falha ao cancelar assinatura Stripe:', error);
-    const message = error instanceof Error ? error.message : 'Falha ao cancelar a assinatura.';
-    return res.status(400).json({ message });
+    if (res.headersSent) return;
+    return res.status(400).json({ message: 'Não foi possível cancelar a assinatura. Tente novamente.' });
   }
 });
 
