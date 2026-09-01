@@ -141,6 +141,69 @@ export async function syncStripeInvoices(subscription: Subscription) {
   }
 }
 
+export async function syncRecentStripeSubscriptions(limit = 100) {
+  if (!stripe) return;
+
+  const userRepo = AppDataSource.getRepository(User);
+  const planRepo = AppDataSource.getRepository(Plan);
+  const launchPlan = await planRepo.findOne({ where: { code: 'LAUNCH' } });
+
+  async function upsert(stripeSubscription: Stripe.Subscription) {
+    const customerId = typeof stripeSubscription.customer === 'string'
+      ? stripeSubscription.customer
+      : stripeSubscription.customer?.id;
+    const user = stripeSubscription.metadata?.userId
+      ? await userRepo.findOne({ where: { id: stripeSubscription.metadata.userId } })
+      : customerId
+        ? await userRepo.findOne({ where: { stripeCustomerId: customerId } })
+        : null;
+    if (!user) return;
+
+    const priceId = stripeSubscription.items.data[0]?.price?.id;
+    const plan = (stripeSubscription.metadata?.planId
+      ? await planRepo.findOne({ where: { id: stripeSubscription.metadata.planId } })
+      : null)
+      ?? (priceId ? await planRepo.findOne({ where: { stripePriceId: priceId } }) : null)
+      ?? launchPlan;
+    if (!plan) return;
+
+    await upsertLocalSubscription({ user, plan, stripeSubscription });
+  }
+
+  const subscriptions = await stripe.subscriptions.list({
+    limit,
+    status: 'all',
+    expand: ['data.default_payment_method'],
+  });
+  for (const stripeSubscription of subscriptions.data) {
+    try {
+      await upsert(stripeSubscription);
+    } catch (error) {
+      console.error(`Falha ao sincronizar assinatura Stripe ${stripeSubscription.id}:`, error);
+    }
+  }
+
+  const sessions = await stripe.checkout.sessions.list({ limit, status: 'complete' });
+  for (const session of sessions.data) {
+    if (!session.subscription) continue;
+    try {
+      const stripeSubscription = await stripe.subscriptions.retrieve(String(session.subscription), {
+        expand: ['default_payment_method'],
+      });
+      if (!stripeSubscription.metadata?.userId && session.metadata?.userId) {
+        stripeSubscription.metadata = {
+          ...stripeSubscription.metadata,
+          userId: session.metadata.userId,
+          planId: session.metadata.planId || stripeSubscription.metadata?.planId || '',
+        };
+      }
+      await upsert(stripeSubscription);
+    } catch (error) {
+      console.error(`Falha ao sincronizar checkout Stripe ${session.id}:`, error);
+    }
+  }
+}
+
 export async function syncAllStripeInvoices(limit = 100) {
   if (!stripe) return;
   const subscriptions = await AppDataSource.getRepository(Subscription).find({ take: limit });
