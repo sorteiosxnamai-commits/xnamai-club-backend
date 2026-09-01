@@ -13,19 +13,56 @@ import { customerRouter } from './routes/customer';
 import { adminRouter } from './routes/admin';
 import { webhooksRouter, stripeWebhookHandler } from './routes/webhooks';
 
+function normalizeOrigin(value: string): string {
+  return value.trim().replace(/\/$/, '');
+}
+
+function originVariants(value: string): string[] {
+  const origin = normalizeOrigin(value);
+  if (!origin) return [];
+  try {
+    const url = new URL(origin);
+    if (url.hostname === 'localhost' || url.hostname.endsWith('.localhost')) {
+      return [url.origin];
+    }
+    const hosts = new Set([url.hostname]);
+    if (url.hostname.startsWith('www.')) {
+      hosts.add(url.hostname.slice(4));
+    } else {
+      hosts.add(`www.${url.hostname}`);
+    }
+    return [...hosts].map((hostname) => {
+      const next = new URL(url.href);
+      next.hostname = hostname;
+      return next.origin;
+    });
+  } catch {
+    return [origin];
+  }
+}
+
 async function bootstrap() {
   const app = express();
-  const allowedOrigins = [
-    env.frontendUrl,
+  const extraOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const allowedOrigins = [...new Set([
+    ...originVariants(env.frontendUrl),
     'http://localhost:5173',
     'https://xnamai-club-frontend.vercel.app',
-  ].filter(Boolean);
+    'https://www.clubxnamai.com.br',
+    'https://clubxnamai.com.br',
+    ...extraOrigins.flatMap(originVariants),
+  ])];
+  console.log('CORS origins:', allowedOrigins.join(', '));
   app.use(cors({
     origin(origin, callback) {
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, origin || allowedOrigins[0]);
         return;
       }
+      console.warn(`CORS blocked origin: ${origin}`);
       callback(null, false);
     },
     credentials: true,
