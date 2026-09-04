@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { AppDataSource } from '../config/data-source';
 import { User, UserRole } from '../entities/User';
-import { Subscription, SubscriptionStatus } from '../entities/Subscription';
+import { SubscriptionStatus } from '../entities/Subscription';
 import { audit } from '../services/audit';
 import { syncRecentStripeSubscriptions } from '../services/stripe-billing';
 
@@ -17,6 +17,12 @@ const JOINED_STATUSES = new Set<SubscriptionStatus>([
 
 function hasJoined(user: User) {
   return (user.subscriptions ?? []).length > 0;
+}
+
+function hasSigned(user: User) {
+  return (user.subscriptions ?? []).some(
+    (subscription) => JOINED_STATUSES.has(subscription.status) || Boolean(subscription.startedAt),
+  );
 }
 
 function launchSubscription(user: User) {
@@ -78,20 +84,28 @@ atendimentoRouter.get('/members', async (_req, res) => {
     console.error('Falha ao sincronizar assinaturas Stripe no atendimento:', error);
   }
 
-  const subscriptions = await AppDataSource.getRepository(Subscription).find({
+  const users = await AppDataSource.getRepository(User).find({
+    where: { role: UserRole.CUSTOMER },
+    relations: ['subscriptions', 'subscriptions.plan'],
     order: { createdAt: 'DESC' },
-    take: 500,
-    relations: ['user', 'user.subscriptions', 'user.subscriptions.plan', 'plan'],
+    take: 1000,
   });
-  const seen = new Set<string>();
-  const members = [];
-  for (const row of subscriptions) {
-    const user = row.user;
-    if (!user || seen.has(user.id) || user.role !== UserRole.CUSTOMER) continue;
-    seen.add(user.id);
-    members.push(serializeMember(user));
+
+  const joined = [];
+  const unsigned = [];
+  for (const user of users) {
+    const member = serializeMember(user);
+    if (hasSigned(user)) joined.push(member);
+    else unsigned.push(member);
   }
-  res.json(members);
+
+  joined.sort((a, b) => {
+    const aTime = a.subscription?.startedAt || a.createdAt;
+    const bTime = b.subscription?.startedAt || b.createdAt;
+    return +new Date(bTime) - +new Date(aTime);
+  });
+
+  res.json({ joined, unsigned });
 });
 
 atendimentoRouter.post('/members/:id/cashback-use', async (req, res) => {
