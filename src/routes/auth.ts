@@ -50,10 +50,16 @@ function publicUser(user: User) {
   };
 }
 
+function firstValidationMessage(error: z.ZodError, fallback: string) {
+  const issues = error.flatten();
+  const fieldMessages = Object.values(issues.fieldErrors).flat().filter((item): item is string => Boolean(item));
+  return fieldMessages[0] || issues.formErrors[0] || fallback;
+}
+
 const registerSchema = z.object({
-  name: z.string().trim().min(2),
-  email: z.string().email(),
-  password: z.string().min(8),
+  name: z.string().trim().min(2, 'Informe seu nome completo.'),
+  email: z.string().email('Informe um e-mail válido.'),
+  password: z.string().min(8, 'A senha deve ter pelo menos 8 caracteres.'),
   companyName: z.string().trim().optional(),
   city: z.string().trim().min(2, 'Informe a cidade.'),
   state: z.string().trim().toUpperCase().refine((value) => BRAZIL_STATES.includes(value as (typeof BRAZIL_STATES)[number]), 'Informe um estado válido.'),
@@ -66,7 +72,12 @@ const registerSchema = z.object({
 
 authRouter.post('/register', async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ message: 'Dados inválidos. Confira cidade, estado e CPF/CNPJ.', issues: parsed.error.flatten() });
+  if (!parsed.success) {
+    return res.status(400).json({
+      message: firstValidationMessage(parsed.error, 'Dados inválidos. Confira os campos e tente novamente.'),
+      issues: parsed.error.flatten(),
+    });
+  }
 
   const repo = AppDataSource.getRepository(User);
   const email = parsed.data.email.toLowerCase();
@@ -86,8 +97,16 @@ authRouter.post('/register', async (req, res) => {
 });
 
 authRouter.post('/login', async (req, res) => {
-  const parsed = z.object({ email: z.string().email(), password: z.string() }).safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ message: 'Dados inválidos.' });
+  const parsed = z.object({
+    email: z.string().email('Informe um e-mail válido.'),
+    password: z.string().min(1, 'Informe a senha.'),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      message: firstValidationMessage(parsed.error, 'E-mail ou senha inválidos.'),
+      issues: parsed.error.flatten(),
+    });
+  }
 
   const repo = AppDataSource.getRepository(User);
   const user = await repo.findOne({ where: { email: parsed.data.email.toLowerCase() } });
