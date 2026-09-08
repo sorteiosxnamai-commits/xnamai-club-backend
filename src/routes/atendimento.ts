@@ -3,7 +3,11 @@ import { AppDataSource } from '../config/data-source';
 import { User, UserRole } from '../entities/User';
 import { SubscriptionStatus } from '../entities/Subscription';
 import { audit } from '../services/audit';
-import { syncRecentStripeSubscriptions } from '../services/stripe-billing';
+import { cacheDel, cacheGet, cacheSet } from '../services/cache';
+import { syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
+
+const MEMBERS_CACHE_KEY = 'atendimento:members';
+const MEMBERS_CACHE_TTL = 45;
 
 export const atendimentoRouter = Router();
 
@@ -77,19 +81,15 @@ function serializeMember(user: User) {
   };
 }
 
-atendimentoRouter.get('/members', async (_req, res) => {
-  try {
-    await syncRecentStripeSubscriptions();
-  } catch (error) {
-    console.error('Falha ao sincronizar assinaturas Stripe no atendimento:', error);
-  }
-
-  const users = await AppDataSource.getRepository(User).find({
-    where: { role: UserRole.CUSTOMER },
-    relations: ['subscriptions', 'subscriptions.plan'],
-    order: { createdAt: 'DESC' },
-    take: 1000,
-  });
+async function listMembers() {
+  const users = await AppDataSource.getRepository(User)
+    .createQueryBuilder('user')
+    .leftJoinAndSelect('user.subscriptions', 'subscription')
+    .leftJoinAndSelect('subscription.plan', 'plan')
+    .where('user.role = :role', { role: UserRole.CUSTOMER })
+    .orderBy('user.createdAt', 'DESC')
+    .take(1000)
+    .getMany();
 
   const joined = [];
   const unsigned = [];
@@ -105,7 +105,36 @@ atendimentoRouter.get('/members', async (_req, res) => {
     return +new Date(bTime) - +new Date(aTime);
   });
 
-  res.json({ joined, unsigned });
+  return { joined, unsigned };
+}
+
+atendimentoRouter.get('/members', async (req, res) => {
+  const refresh = String(req.query.refresh || '') === '1';
+  if (!refresh) {
+    const cached = await cacheGet<{ joined: unknown[]; unsigned: unknown[] }>(MEMBERS_CACHE_KEY);
+    if (cached) {
+      res.json(cached);
+      void syncRecentStripeSubscriptionsInBackground().then(() => cacheDel(MEMBERS_CACHE_KEY));
+      return;
+    }
+  } else {
+    try {
+      await Promise.race([
+        syncRecentStripeSubscriptions(),
+        new Promise((_, reject) => { setTimeout(() => reject(new Error('stripe-sync-timeout')), 4000); }),
+      ]);
+    } catch (error) {
+      console.error('Sincronização Stripe no atualizar:', error);
+    }
+    await cacheDel(MEMBERS_CACHE_KEY);
+  }
+
+  const payload = await listMembers();
+  res.json(payload);
+  await cacheSet(MEMBERS_CACHE_KEY, payload, MEMBERS_CACHE_TTL);
+  if (!refresh) {
+    void syncRecentStripeSubscriptionsInBackground().then(() => cacheDel(MEMBERS_CACHE_KEY));
+  }
 });
 
 atendimentoRouter.post('/members/:id/cashback-use', async (req, res) => {
@@ -129,6 +158,7 @@ atendimentoRouter.post('/members/:id/cashback-use', async (req, res) => {
   user.launchCashbackUsedAt = new Date();
   user.launchCashbackUsedById = req.auth?.sub ?? null;
   await userRepo.save(user);
+  await cacheDel(MEMBERS_CACHE_KEY);
   await audit({
     actorUserId: req.auth?.sub ?? null,
     action: 'LAUNCH_CASHBACK_USED',

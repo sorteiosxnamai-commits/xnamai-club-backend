@@ -141,8 +141,24 @@ export async function syncStripeInvoices(subscription: Subscription) {
   }
 }
 
-export async function syncRecentStripeSubscriptions(limit = 100) {
-  if (!stripe) return;
+async function mapPool<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) {
+  const executing = new Set<Promise<void>>();
+  for (const item of items) {
+    const task = Promise.resolve()
+      .then(() => worker(item))
+      .finally(() => { executing.delete(task); });
+    executing.add(task);
+    if (executing.size >= concurrency) await Promise.race(executing);
+  }
+  await Promise.all(executing);
+}
+
+let stripeSyncRunning = false;
+let stripeSyncAt = 0;
+
+export async function syncRecentStripeSubscriptions(limit = 40) {
+  const client = stripe;
+  if (!client) return;
 
   const userRepo = AppDataSource.getRepository(User);
   const planRepo = AppDataSource.getRepository(Plan);
@@ -170,24 +186,28 @@ export async function syncRecentStripeSubscriptions(limit = 100) {
     await upsertLocalSubscription({ user, plan, stripeSubscription });
   }
 
-  const subscriptions = await stripe.subscriptions.list({
+  const subscriptions = await client.subscriptions.list({
     limit,
     status: 'all',
     expand: ['data.default_payment_method'],
   });
-  for (const stripeSubscription of subscriptions.data) {
+  const seen = new Set(subscriptions.data.map((item) => item.id));
+  await mapPool(subscriptions.data, 6, async (stripeSubscription) => {
     try {
       await upsert(stripeSubscription);
     } catch (error) {
       console.error(`Falha ao sincronizar assinatura Stripe ${stripeSubscription.id}:`, error);
     }
-  }
+  });
 
-  const sessions = await stripe.checkout.sessions.list({ limit, status: 'complete' });
-  for (const session of sessions.data) {
-    if (!session.subscription) continue;
+  const sessions = await client.checkout.sessions.list({ limit, status: 'complete' });
+  const missing = sessions.data.filter((session) => {
+    const id = typeof session.subscription === 'string' ? session.subscription : session.subscription?.id;
+    return Boolean(id) && !seen.has(id as string);
+  });
+  await mapPool(missing, 4, async (session) => {
     try {
-      const stripeSubscription = await stripe.subscriptions.retrieve(String(session.subscription), {
+      const stripeSubscription = await client.subscriptions.retrieve(String(session.subscription), {
         expand: ['default_payment_method'],
       });
       if (!stripeSubscription.metadata?.userId && session.metadata?.userId) {
@@ -201,6 +221,21 @@ export async function syncRecentStripeSubscriptions(limit = 100) {
     } catch (error) {
       console.error(`Falha ao sincronizar checkout Stripe ${session.id}:`, error);
     }
+  });
+}
+
+export async function syncRecentStripeSubscriptionsInBackground(force = false) {
+  const now = Date.now();
+  if (stripeSyncRunning) return;
+  if (!force && stripeSyncAt && now - stripeSyncAt < 60_000) return;
+  stripeSyncRunning = true;
+  try {
+    await syncRecentStripeSubscriptions();
+    stripeSyncAt = Date.now();
+  } catch (error) {
+    console.error('Falha ao sincronizar assinaturas Stripe em segundo plano:', error);
+  } finally {
+    stripeSyncRunning = false;
   }
 }
 
