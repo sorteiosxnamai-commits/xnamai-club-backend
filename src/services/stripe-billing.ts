@@ -34,6 +34,38 @@ function mapStripeStatus(status: Stripe.Subscription.Status): SubscriptionStatus
   return SubscriptionStatus.PAYMENT_FAILED;
 }
 
+function addCalendarMonth(from: Date) {
+  const next = new Date(from);
+  next.setMonth(next.getMonth() + 1);
+  return next;
+}
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function laterDate(a: Date, b: Date) {
+  return a.getTime() >= b.getTime() ? a : b;
+}
+
+function monthLikeEnd(start: Date, end: Date) {
+  return end.getTime() - start.getTime() >= WEEK_MS;
+}
+
+function paidInvoiceCoverage(stripeInvoice: Stripe.Invoice) {
+  const paidUnix = stripeInvoice.status_transitions?.paid_at || stripeInvoice.created;
+  const paidAt = new Date(paidUnix * 1000);
+  const raw = stripeInvoice as Stripe.Invoice & { period_start?: number; period_end?: number };
+  const line = stripeInvoice.lines?.data?.[0];
+  const startUnix = line?.period?.start ?? raw.period_start;
+  const endUnix = line?.period?.end ?? raw.period_end;
+  const start = startUnix ? new Date(startUnix * 1000) : paidAt;
+  let end = addCalendarMonth(paidAt);
+  if (endUnix) {
+    const invoiceEnd = new Date(endUnix * 1000);
+    if (monthLikeEnd(start, invoiceEnd)) end = laterDate(end, invoiceEnd);
+  }
+  return { paidAt, start, end };
+}
+
 function paymentDetailsFromStripe(params: {
   stripeSubscription: Stripe.Subscription;
   paymentMethod?: { brand?: string | null; last4?: string | null; stripeId?: string | null; type?: PaymentMethodType };
@@ -109,6 +141,11 @@ export async function upsertLocalSubscription(params: {
     : stripeSubscription.customer.id;
   subscription.gatewaySubscriptionId = stripeSubscription.id;
   await subscriptionRepo.save(subscription);
+  const latestInvoice = stripeSubscription.latest_invoice;
+  const paidLatest = latestInvoice && typeof latestInvoice !== 'string' && latestInvoice.status === 'paid'
+    ? latestInvoice
+    : null;
+  await applyPaidPeriodAccess(subscription, paidLatest);
 
   if (paymentMethod?.stripeId) {
     const pmRepo = AppDataSource.getRepository(PaymentMethod);
@@ -129,6 +166,96 @@ export async function upsertLocalSubscription(params: {
   return subscription;
 }
 
+export async function applyPaidPeriodAccess(subscription: Subscription, stripeInvoice?: Stripe.Invoice | null) {
+  const now = Date.now();
+  let paidAt: Date | null = null;
+  let periodStart: Date | null = null;
+  let periodEnd: Date | null = null;
+
+  if (stripeInvoice?.status === 'paid') {
+    const coverage = paidInvoiceCoverage(stripeInvoice);
+    paidAt = coverage.paidAt;
+    periodStart = coverage.start;
+    periodEnd = coverage.end;
+  }
+
+  if (!paidAt) {
+    const local = await AppDataSource.getRepository(Invoice).findOne({
+      where: { subscription: { id: subscription.id }, status: InvoiceStatus.PAID },
+      order: { paidAt: 'DESC' },
+    });
+    if (local) {
+      paidAt = local.paidAt ?? local.dueDate;
+      periodStart = local.paidAt ?? local.dueDate;
+      periodEnd = addCalendarMonth(paidAt);
+    }
+  }
+
+  if (!paidAt && stripe && subscription.gatewaySubscriptionId) {
+    const list = await stripe.invoices.list({
+      subscription: subscription.gatewaySubscriptionId,
+      status: 'paid',
+      limit: 1,
+    });
+    if (list.data[0]) {
+      const coverage = paidInvoiceCoverage(list.data[0]);
+      paidAt = coverage.paidAt;
+      periodStart = coverage.start;
+      periodEnd = coverage.end;
+    }
+  }
+
+  if (!paidAt || !periodEnd || periodEnd.getTime() <= now) return subscription;
+
+  const stripePeriod = subscription.currentPeriodEnd;
+  if (stripePeriod && periodStart && monthLikeEnd(periodStart, stripePeriod)) {
+    periodEnd = laterDate(periodEnd, stripePeriod);
+  }
+
+  if (
+    subscription.status === SubscriptionStatus.ACTIVE
+    && subscription.currentPeriodEnd
+    && subscription.currentPeriodEnd.getTime() >= periodEnd.getTime()
+  ) {
+    return subscription;
+  }
+
+  subscription.status = SubscriptionStatus.ACTIVE;
+  subscription.startedAt = subscription.startedAt ?? periodStart ?? paidAt;
+  subscription.currentPeriodStart = periodStart ?? paidAt;
+  subscription.currentPeriodEnd = periodEnd;
+  subscription.cancelledAt = null;
+  return AppDataSource.getRepository(Subscription).save(subscription);
+}
+
+export async function repairPaidThroughSubscriptions() {
+  const since = new Date();
+  since.setDate(since.getDate() - 45);
+  const rows = await AppDataSource.getRepository(Subscription)
+    .createQueryBuilder('subscription')
+    .leftJoin('subscription.invoices', 'invoice')
+    .where('subscription.status IN (:...statuses)', {
+      statuses: [SubscriptionStatus.CANCELLED, SubscriptionStatus.PENDING],
+    })
+    .andWhere('(invoice.status = :paid OR subscription.createdAt >= :since)', {
+      paid: InvoiceStatus.PAID,
+      since,
+    })
+    .getMany();
+
+  let updated = 0;
+  for (const subscription of rows) {
+    try {
+      const before = subscription.status;
+      const next = await applyPaidPeriodAccess(subscription);
+      if (next.status !== before) updated += 1;
+    } catch (error) {
+      console.error(`Falha ao reativar período pago da assinatura ${subscription.id}:`, error);
+    }
+  }
+  return updated;
+}
+
 export async function syncStripeInvoices(subscription: Subscription) {
   if (!subscription.gatewaySubscriptionId || !stripe) return;
 
@@ -139,6 +266,7 @@ export async function syncStripeInvoices(subscription: Subscription) {
   for (const invoice of list.data) {
     await recordStripeInvoice(invoice, subscription);
   }
+  await applyPaidPeriodAccess(subscription);
 }
 
 async function mapPool<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) {
@@ -189,7 +317,7 @@ export async function syncRecentStripeSubscriptions(limit = 40) {
   const subscriptions = await client.subscriptions.list({
     limit,
     status: 'all',
-    expand: ['data.default_payment_method'],
+    expand: ['data.default_payment_method', 'data.latest_invoice'],
   });
   const seen = new Set(subscriptions.data.map((item) => item.id));
   await mapPool(subscriptions.data, 6, async (stripeSubscription) => {
@@ -208,7 +336,7 @@ export async function syncRecentStripeSubscriptions(limit = 40) {
   await mapPool(missing, 4, async (session) => {
     try {
       const stripeSubscription = await client.subscriptions.retrieve(String(session.subscription), {
-        expand: ['default_payment_method'],
+        expand: ['default_payment_method', 'latest_invoice'],
       });
       if (!stripeSubscription.metadata?.userId && session.metadata?.userId) {
         stripeSubscription.metadata = {
@@ -273,6 +401,7 @@ export async function recordStripeInvoice(stripeInvoice: Stripe.Invoice, subscri
     : paid ? new Date() : null;
   invoice.gatewayInvoiceId = stripeInvoice.id ?? null;
   await invoiceRepo.save(invoice);
+  if (paid) await applyPaidPeriodAccess(subscription, stripeInvoice);
 
   const shouldLogAttempt =
     (paid && previousStatus !== InvoiceStatus.PAID)

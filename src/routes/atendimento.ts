@@ -4,7 +4,7 @@ import { User, UserRole } from '../entities/User';
 import { SubscriptionStatus } from '../entities/Subscription';
 import { audit } from '../services/audit';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache';
-import { syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
+import { repairPaidThroughSubscriptions, syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
 
 const MEMBERS_CACHE_KEY = 'atendimento:members';
 const MEMBERS_CACHE_TTL = 45;
@@ -110,6 +110,8 @@ async function listMembers() {
 
 atendimentoRouter.get('/members', async (req, res) => {
   const refresh = String(req.query.refresh || '') === '1';
+  const repaired = await repairPaidThroughSubscriptions();
+  if (repaired) await cacheDel(MEMBERS_CACHE_KEY);
   if (!refresh) {
     const cached = await cacheGet<{ joined: unknown[]; unsigned: unknown[] }>(MEMBERS_CACHE_KEY);
     if (cached) {

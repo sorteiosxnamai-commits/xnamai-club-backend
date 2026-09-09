@@ -33,7 +33,7 @@ export async function stripeWebhookHandler(req: Request, res: Response) {
         const plan = await AppDataSource.getRepository(Plan).findOne({ where: { id: session.metadata.planId } });
         if (user && plan) {
           const stripeSubscription = await stripe.subscriptions.retrieve(String(session.subscription), {
-            expand: ['default_payment_method'],
+            expand: ['default_payment_method', 'latest_invoice'],
           });
           await upsertLocalSubscription({ user, plan, stripeSubscription });
         }
