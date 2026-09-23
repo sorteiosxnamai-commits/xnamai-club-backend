@@ -1,6 +1,7 @@
 import { Column, CreateDateColumn, Entity, OneToMany, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 import { Subscription } from './Subscription';
 import { PaymentMethod } from './PaymentMethod';
+import { dateTimeColumnType } from './column-types';
 
 export enum UserRole {
   CUSTOMER = 'CUSTOMER',
@@ -43,7 +44,7 @@ export class User {
   @Column({ type: 'varchar', nullable: true })
   stripeCustomerId?: string | null;
 
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: dateTimeColumnType, nullable: true })
   launchCashbackUsedAt!: Date | null;
 
   @Column({ type: 'varchar', nullable: true })

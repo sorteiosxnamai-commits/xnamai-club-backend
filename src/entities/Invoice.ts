@@ -1,5 +1,6 @@
 import { Column, CreateDateColumn, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { Subscription } from './Subscription';
+import { dateTimeColumnType } from './column-types';
 import { PaymentAttempt } from './PaymentAttempt';
 
 export enum InvoiceStatus {
@@ -24,10 +25,10 @@ export class Invoice {
   @Column({ type: 'varchar', default: InvoiceStatus.PENDING })
   status!: InvoiceStatus;
 
-  @Column({ type: 'timestamp' })
+  @Column({ type: dateTimeColumnType })
   dueDate!: Date;
 
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: dateTimeColumnType, nullable: true })
   paidAt!: Date | null;
 
   @Column({ type: 'varchar', nullable: true })

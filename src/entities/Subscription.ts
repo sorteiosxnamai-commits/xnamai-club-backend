@@ -2,6 +2,7 @@ import { Column, CreateDateColumn, Entity, JoinColumn, ManyToOne, OneToMany, Pri
 import { User } from './User';
 import { Plan } from './Plan';
 import { Invoice } from './Invoice';
+import { dateTimeColumnType } from './column-types';
 
 export enum SubscriptionStatus {
   PENDING = 'PENDING',
@@ -28,16 +29,16 @@ export class Subscription {
   @Column({ type: 'varchar', default: SubscriptionStatus.PENDING })
   status!: SubscriptionStatus;
 
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: dateTimeColumnType, nullable: true })
   startedAt!: Date | null;
 
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: dateTimeColumnType, nullable: true })
   currentPeriodStart!: Date | null;
 
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: dateTimeColumnType, nullable: true })
   currentPeriodEnd!: Date | null;
 
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: dateTimeColumnType, nullable: true })
   cancelledAt!: Date | null;
 
   @Column({ type: 'varchar', nullable: true })

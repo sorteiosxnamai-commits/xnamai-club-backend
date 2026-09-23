@@ -42,7 +42,7 @@ function originVariants(value: string): string[] {
   }
 }
 
-async function bootstrap() {
+export function createApp() {
   const app = express();
   const extraOrigins = (process.env.CORS_ORIGINS || '')
     .split(',')
@@ -89,7 +89,6 @@ async function bootstrap() {
   api.use('/atendimento', atendimentoRouter);
   api.use('/webhooks', webhooksRouter);
   app.use('/api', api);
-  app.use(api);
 
   app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(err);
@@ -103,6 +102,11 @@ async function bootstrap() {
     }
   });
 
+  return app;
+}
+
+async function bootstrap() {
+  const app = createApp();
   await new Promise<void>((resolve) => {
     app.listen(env.port, '0.0.0.0', () => {
       console.log(`XNaMai Club API em 0.0.0.0:${env.port}`);
@@ -119,7 +123,9 @@ async function bootstrap() {
   }
 }
 
-bootstrap().catch((error) => {
-  console.error('Falha ao iniciar API:', error);
-  process.exit(1);
-});
+if (require.main === module) {
+  bootstrap().catch((error) => {
+    console.error('Falha ao iniciar API:', error);
+    process.exit(1);
+  });
+}

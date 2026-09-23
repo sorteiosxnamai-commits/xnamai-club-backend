@@ -1,7 +1,16 @@
+function resolveJwtSecret(): string {
+  const configured = process.env.JWT_SECRET?.trim();
+  if (configured) return configured;
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET must be configured in production.');
+  }
+  return 'dev-secret';
+}
+
 export const env = {
   port: Number(process.env.PORT || 4000),
   frontendUrl: (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, ''),
-  jwtSecret: process.env.JWT_SECRET || 'dev-secret',
+  jwtSecret: resolveJwtSecret(),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '8h',
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || '',

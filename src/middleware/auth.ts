@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { UserRole } from '../entities/User';
+import { env } from '../config/env';
 
 export type JwtPayload = {
   sub: string;
@@ -9,8 +10,8 @@ export type JwtPayload = {
 };
 
 export function signAccessToken(payload: JwtPayload): string {
-  return jwt.sign(payload, process.env.JWT_SECRET || 'dev-secret', {
-    expiresIn: (process.env.JWT_EXPIRES_IN || '8h') as jwt.SignOptions['expiresIn'],
+  return jwt.sign(payload, env.jwtSecret, {
+    expiresIn: env.jwtExpiresIn as jwt.SignOptions['expiresIn'],
   });
 }
 
@@ -22,7 +23,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 
   try {
     const token = header.slice('Bearer '.length);
-    req.auth = jwt.verify(token, process.env.JWT_SECRET || 'dev-secret') as JwtPayload;
+    req.auth = jwt.verify(token, env.jwtSecret) as JwtPayload;
     next();
   } catch {
     return res.status(401).json({ message: 'Token inválido ou expirado.' });
