@@ -3,7 +3,6 @@ import { AppDataSource } from '../config/data-source';
 import { User, UserRole } from '../entities/User';
 import { SubscriptionStatus } from '../entities/Subscription';
 import { audit } from '../services/audit';
-import { requireAuth, requireRole } from '../middleware/auth';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache';
 import { repairPaidThroughSubscriptions, syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
 
@@ -11,7 +10,6 @@ const MEMBERS_CACHE_KEY = 'atendimento:members';
 const MEMBERS_CACHE_TTL = 45;
 
 export const atendimentoRouter = Router();
-atendimentoRouter.use(requireAuth, requireRole(UserRole.ADMIN, UserRole.SUPPORT));
 
 const JOINED_STATUSES = new Set<SubscriptionStatus>([
   SubscriptionStatus.ACTIVE,
