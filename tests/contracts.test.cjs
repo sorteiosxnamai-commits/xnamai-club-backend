@@ -17,7 +17,6 @@ const { AppDataSource } = require('../dist/config/data-source');
 const { Plan } = require('../dist/entities/Plan');
 const { Subscription, SubscriptionStatus } = require('../dist/entities/Subscription');
 const { User } = require('../dist/entities/User');
-const { AuditLog } = require('../dist/entities/AuditLog');
 const bcrypt = require('bcryptjs');
 const { UserRole } = require('../dist/entities/User');
 const { createApp } = require('../dist/server');
@@ -82,21 +81,8 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
       startedAt: new Date(), currentPeriodStart: new Date(), currentPeriodEnd: new Date(Date.now() + 86400000) });
     assert.equal((await request('/api/subscriptions/me')).body.status, 'ACTIVE');
     assert.equal((await request('/api/me/dashboard')).body.subscription.status, 'ACTIVE');
-    // --- mesa interna de atendimento: ADMIN e SUPPORT, com login real ---
+    // --- atendimento publico, sem login ---
     const users = AppDataSource.getRepository(User);
-    const staff = async (role, email) => {
-      const password = 'EquipeTeste123!';
-      const saved = await users.save(users.create({ email, name: `Equipe ${role}`, companyName: 'XNaMai',
-        passwordHash: await bcrypt.hash(password, 4), role }));
-      const login = await request('/api/auth/login', { method: 'POST', headers: { Authorization: '' },
-        body: JSON.stringify({ email, password }) });
-      assert.equal(login.status, 200);
-      assert.equal(login.body.user.role, role);
-      return { id: saved.id, auth: { headers: { Authorization: `Bearer ${login.body.token}` } } };
-    };
-    const support = await staff(UserRole.SUPPORT, 'support@example.invalid');
-    const admin = await staff(UserRole.ADMIN, 'admin@example.invalid');
-    const customerAuth = { headers: { Authorization: `Bearer ${token}` } };
     const anonymous = { headers: { Authorization: '' } };
 
     // segundo membro (para o ADMIN) e um cadastro sem assinatura (aba "nao assinaram")
@@ -112,15 +98,8 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     const cashbackOf = (id) => `${memberUrl}/${id}/cashback-use`;
     const usedAt = async (id) => (await users.findOneByOrFail({ id })).launchCashbackUsedAt;
 
-    // anonimo -> 401, cliente -> 403; nenhum dos dois altera o cashback
-    assert.equal((await request(memberUrl, anonymous)).status, 401);
-    assert.equal((await request(cashbackOf(user.id), { ...anonymous, method: 'POST' })).status, 401);
-    assert.equal((await request(memberUrl, customerAuth)).status, 403);
-    assert.equal((await request(cashbackOf(user.id), { ...customerAuth, method: 'POST' })).status, 403);
-    assert.equal(await usedAt(user.id), null);
-
-    // SUPPORT e ADMIN leem a mesa completa (membros, sem assinatura, dados de busca)
-    const desk = await request(`${memberUrl}?refresh=1`, support.auth);
+    // Visitantes leem a mesa completa (membros, sem assinatura, dados de busca).
+    const desk = await request(`${memberUrl}?refresh=1`, anonymous);
     assert.equal(desk.status, 200);
     const joined = desk.body.joined.map((row) => row.email).sort();
     assert.deepEqual(joined, [profile.email, 'second@example.invalid'].sort());
@@ -129,24 +108,18 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     assert.equal(secondRow.document, '11222333000181');
     assert.equal(secondRow.phone, '(11) 98888-7777');
     assert.equal(secondRow.cashback.eligible, true);
-    assert.equal((await request(memberUrl, admin.auth)).status, 200);
+    assert.equal((await request(memberUrl)).status, 200);
 
-    // SUPPORT e ADMIN marcam o cashback; o autor fica registrado
-    const bySupport = await request(cashbackOf(user.id), { ...support.auth, method: 'POST' });
-    assert.equal(bySupport.status, 200);
-    assert.equal(bySupport.body.cashback.used, true);
-    assert.equal((await users.findOneByOrFail({ id: user.id })).launchCashbackUsedById, support.id);
-    const byAdmin = await request(cashbackOf(second.id), { ...admin.auth, method: 'POST' });
-    assert.equal(byAdmin.status, 200);
-    assert.equal((await users.findOneByOrFail({ id: second.id })).launchCashbackUsedById, admin.id);
-    const actors = (await AppDataSource.getRepository(AuditLog).findBy({ action: 'LAUNCH_CASHBACK_USED' }))
-      .map((row) => [row.entityId, row.actorUserId]).sort();
-    assert.deepEqual(actors, [[second.id, admin.id], [user.id, support.id]].sort());
-    assert.equal((await request(cashbackOf(user.id), { ...support.auth, method: 'POST' })).status, 409);
+    // Visitantes tambem marcam o cashback, sem ator autenticado.
+    const cashback = await request(cashbackOf(user.id), { ...anonymous, method: 'POST' });
+    assert.equal(cashback.status, 200);
+    assert.equal(cashback.body.cashback.used, true);
+    assert.ok(await usedAt(user.id));
+    assert.equal((await users.findOneByOrFail({ id: user.id })).launchCashbackUsedById, null);
+    assert.equal((await request(cashbackOf(user.id), { ...anonymous, method: 'POST' })).status, 409);
 
-    const adminAuth = admin.auth;
     assert.equal((await fetch(`${base}/plans`)).status, 404);
-    assert.equal((await fetch(`${base}/atendimento/members`, { headers: adminAuth.headers })).status, 404);
+    assert.equal((await fetch(`${base}/atendimento/members`)).status, 404);
     assert.equal((await fetch(`${base}/api/health`)).status, 200);
   } finally {
     await new Promise(resolve => server.close(resolve));
