@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { AppDataSource } from '../config/data-source';
 import { stripe } from '../config/stripe';
+import { LAUNCH_CASHBACK_CUTOFF } from '../config/business-rules';
 import { Plan } from '../entities/Plan';
 import { User, UserRole } from '../entities/User';
 
@@ -97,9 +98,31 @@ async function syncClubPlans() {
   }
 }
 
+async function backfillLaunchCashbackEligibility() {
+  const userRepo = AppDataSource.getRepository(User);
+  const users = await userRepo.find({
+    where: { role: UserRole.CUSTOMER },
+    relations: ['subscriptions', 'subscriptions.plan'],
+  });
+  let updated = 0;
+  for (const user of users) {
+    if (user.launchCashbackEligibleAt) continue;
+    const legacyLaunch = (user.subscriptions ?? []).find(
+      (subscription) => subscription.plan?.code === 'LAUNCH'
+        && subscription.createdAt < LAUNCH_CASHBACK_CUTOFF,
+    );
+    if (!legacyLaunch) continue;
+    user.launchCashbackEligibleAt = legacyLaunch.createdAt;
+    await userRepo.save(user);
+    updated += 1;
+  }
+  if (updated) console.log(`Cashback de lançamento preservado para ${updated} cliente(s).`);
+}
+
 export async function seedInitialData() {
   await syncClubPlans();
   await ensureStripePrices();
+  await backfillLaunchCashbackEligibility();
 
   const userRepo = AppDataSource.getRepository(User);
   const adminEmail = (process.env.ADMIN_EMAIL || 'admin@xnamai.local').toLowerCase();

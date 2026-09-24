@@ -47,6 +47,9 @@ export class User {
   @Column({ type: dateTimeColumnType, nullable: true })
   launchCashbackUsedAt!: Date | null;
 
+  @Column({ type: dateTimeColumnType, nullable: true })
+  launchCashbackEligibleAt!: Date | null;
+
   @Column({ type: 'varchar', nullable: true })
   launchCashbackUsedById!: string | null;
 

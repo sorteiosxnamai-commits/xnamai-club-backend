@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { AppDataSource } from '../config/data-source';
+import { LAUNCH_CASHBACK_CUTOFF } from '../config/business-rules';
 import { User, UserRole } from '../entities/User';
 import { SubscriptionStatus } from '../entities/Subscription';
 import { audit } from '../services/audit';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache';
 import { repairPaidThroughSubscriptions, syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
 
-const MEMBERS_CACHE_KEY = 'atendimento:members';
+const MEMBERS_CACHE_KEY = 'atendimento:members:v2';
 const MEMBERS_CACHE_TTL = 45;
 
 export const atendimentoRouter = Router();
@@ -45,6 +46,10 @@ function serializeMember(user: User) {
   const latest = latestSubscription(user);
   const launch = launchSubscription(user);
   const launchJoined = Boolean(launch && (JOINED_STATUSES.has(launch.status) || launch.startedAt));
+  const grandfathered = Boolean(
+    user.launchCashbackEligibleAt
+      || (launchJoined && launch && launch.createdAt < LAUNCH_CASHBACK_CUTOFF),
+  );
   const used = Boolean(user.launchCashbackUsedAt);
   return {
     id: user.id,
@@ -73,8 +78,8 @@ function serializeMember(user: User) {
         }
       : null,
     cashback: {
-      eligible: launchJoined,
-      amountCents: launchJoined ? (launch?.plan?.monthlyPriceCents ?? 14997) : 0,
+      eligible: grandfathered,
+      amountCents: grandfathered ? 14997 : 0,
       used,
       usedAt: user.launchCashbackUsedAt,
     },

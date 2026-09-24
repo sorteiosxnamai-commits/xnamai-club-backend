@@ -83,6 +83,8 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     assert.equal(checkout.status, 400); // Stripe absent: no checkout URL invented.
 
     const user = await AppDataSource.getRepository(User).findOneByOrFail({ email: profile.email });
+    user.launchCashbackEligibleAt = new Date('2026-09-24T18:00:00.000Z');
+    await AppDataSource.getRepository(User).save(user);
     await AppDataSource.getRepository(Subscription).save({ user, plan, status: SubscriptionStatus.ACTIVE,
       startedAt: new Date(), currentPeriodStart: new Date(), currentPeriodEnd: new Date(Date.now() + 86400000) });
     assert.equal((await request('/api/subscriptions/me')).body.status, 'ACTIVE');
@@ -112,10 +114,15 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     const joined = desk.body.joined.map((row) => row.email).sort();
     assert.deepEqual(joined, [profile.email, 'second@example.invalid'].sort());
     assert.deepEqual(desk.body.unsigned.map((row) => row.email), ['unsigned@example.invalid']);
+    const profileRow = desk.body.joined.find((row) => row.email === profile.email);
     const secondRow = desk.body.joined.find((row) => row.email === 'second@example.invalid');
+    assert.equal(profileRow.subscription.plan.code, 'LAUNCH');
+    assert.equal(profileRow.subscription.plan.name, 'Plano Basic de Lançamento');
+    assert.equal(profileRow.cashback.eligible, true);
     assert.equal(secondRow.document, '11222333000181');
     assert.equal(secondRow.phone, '(11) 98888-7777');
-    assert.equal(secondRow.cashback.eligible, true);
+    assert.equal(secondRow.cashback.eligible, false);
+    assert.equal(secondRow.cashback.amountCents, 0);
     assert.equal((await request(memberUrl)).status, 200);
 
     // Visitantes tambem marcam o cashback, sem ator autenticado.
@@ -125,6 +132,7 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     assert.ok(await usedAt(user.id));
     assert.equal((await users.findOneByOrFail({ id: user.id })).launchCashbackUsedById, null);
     assert.equal((await request(cashbackOf(user.id), { ...anonymous, method: 'POST' })).status, 409);
+    assert.equal((await request(cashbackOf(second.id), { ...anonymous, method: 'POST' })).status, 400);
 
     assert.equal((await fetch(`${base}/plans`)).status, 404);
     assert.equal((await fetch(`${base}/atendimento/members`)).status, 404);
