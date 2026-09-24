@@ -3,6 +3,7 @@ import { AppDataSource } from '../config/data-source';
 import { User, UserRole } from '../entities/User';
 import { SubscriptionStatus } from '../entities/Subscription';
 import { audit } from '../services/audit';
+import { requireAuth, requireRole } from '../middleware/auth';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache';
 import { repairPaidThroughSubscriptions, syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
 
@@ -10,6 +11,12 @@ const MEMBERS_CACHE_KEY = 'atendimento:members';
 const MEMBERS_CACHE_TTL = 45;
 
 export const atendimentoRouter = Router();
+
+// Mesa INTERNA de atendimento: lista todos os clientes com CPF/CNPJ, telefone,
+// e-mail, assinatura e cashback, e altera estado (cashback). So a equipe entra.
+// Um atendimento publico (orientar, planos, login/cadastro) e outra fronteira e
+// nao pode reaproveitar estas rotas.
+atendimentoRouter.use(requireAuth, requireRole(UserRole.ADMIN, UserRole.SUPPORT));
 
 const JOINED_STATUSES = new Set<SubscriptionStatus>([
   SubscriptionStatus.ACTIVE,
