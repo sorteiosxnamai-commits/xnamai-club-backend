@@ -25,6 +25,7 @@ const { plansRouter } = require('../dist/routes/plans');
 const { subscriptionsRouter } = require('../dist/routes/subscriptions');
 const { customerRouter } = require('../dist/routes/customer');
 const { atendimentoRouter } = require('../dist/routes/atendimento');
+const { seedInitialData } = require('../dist/services/seed');
 
 test('production refuses to start without JWT_SECRET', () => {
   const child = spawnSync(process.execPath, ['-e', "require('./dist/config/env')"], {
@@ -38,6 +39,7 @@ test('production refuses to start without JWT_SECRET', () => {
 
 test('real Club routes: auth, plans, subscription, dashboard and member state', async () => {
   await AppDataSource.initialize();
+  await seedInitialData();
   const app = createApp();
   const server = await new Promise(resolve => {
     const listener = app.listen(0, '127.0.0.1', () => resolve(listener));
@@ -64,11 +66,15 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     assert.equal((await request('/api/auth/me')).body.email, profile.email);
     assert.equal((await request('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: profile.email, password: profile.password }) })).status, 200);
 
-    const plan = await AppDataSource.getRepository(Plan).save({ code: 'LAUNCH', name: 'Plano de teste',
-      monthlyPriceCents: 14997, description: '', active: true, sortOrder: 1 });
+    const plan = await AppDataSource.getRepository(Plan).findOneByOrFail({ code: 'LAUNCH' });
+    const priorityPlan = await AppDataSource.getRepository(Plan).findOneByOrFail({ code: 'PRIORITY' });
     const plans = await request('/api/plans');
     assert.equal(plans.status, 200);
+    assert.equal(plans.body.length, 2);
     assert.equal(plans.body[0].monthlyPriceCents, 14997);
+    assert.equal(plans.body[1].code, 'PRIORITY');
+    assert.equal(plans.body[1].monthlyPriceCents, 29797);
+    assert.match(plans.body[1].description, /prioridade nos pedidos/i);
 
     assert.equal((await request('/api/subscriptions/me')).status, 404);
     assert.equal((await request('/api/me/dashboard')).body.subscription, null);
@@ -81,6 +87,8 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
       startedAt: new Date(), currentPeriodStart: new Date(), currentPeriodEnd: new Date(Date.now() + 86400000) });
     assert.equal((await request('/api/subscriptions/me')).body.status, 'ACTIVE');
     assert.equal((await request('/api/me/dashboard')).body.subscription.status, 'ACTIVE');
+    assert.equal((await request('/api/subscriptions/upgrade', { method: 'POST',
+      body: JSON.stringify({ planId: priorityPlan.id }) })).status, 400); // Price Stripe ainda ausente no teste.
     // --- atendimento publico, sem login ---
     const users = AppDataSource.getRepository(User);
     const anonymous = { headers: { Authorization: '' } };

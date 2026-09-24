@@ -6,7 +6,7 @@ import { User, UserRole } from '../entities/User';
 
 const LAUNCH_PLAN = {
   code: 'LAUNCH',
-  name: 'Plano Lançamento',
+  name: 'Plano Basic de Lançamento',
   monthlyPriceCents: 14997,
   compareAtPriceCents: 29997,
   purchaseLimitCents: null as number | null,
@@ -14,6 +14,19 @@ const LAUNCH_PLAN = {
   active: true,
   sortOrder: 1,
 };
+
+const PRIORITY_PLAN = {
+  code: 'PRIORITY',
+  name: 'Plano Prioridade',
+  monthlyPriceCents: 29797,
+  compareAtPriceCents: null as number | null,
+  purchaseLimitCents: null as number | null,
+  description: 'Acesso completo ao XNaMai Club, com ofertas e condições especiais, atendimento prioritário e prioridade nos pedidos.',
+  active: true,
+  sortOrder: 2,
+};
+
+const CLUB_PLANS = [LAUNCH_PLAN, PRIORITY_PLAN];
 
 async function ensureStripePrices() {
   if (!stripe) {
@@ -54,35 +67,38 @@ async function ensureStripePrices() {
   }
 }
 
-async function syncLaunchPlan() {
+async function syncClubPlans() {
   const planRepo = AppDataSource.getRepository(Plan);
-  let launch = await planRepo.findOne({ where: { code: LAUNCH_PLAN.code } });
-  if (!launch) {
-    launch = planRepo.create(LAUNCH_PLAN);
-  } else {
-    const priceChanged = launch.monthlyPriceCents !== LAUNCH_PLAN.monthlyPriceCents;
-    launch.name = LAUNCH_PLAN.name;
-    launch.monthlyPriceCents = LAUNCH_PLAN.monthlyPriceCents;
-    launch.compareAtPriceCents = LAUNCH_PLAN.compareAtPriceCents;
-    launch.purchaseLimitCents = LAUNCH_PLAN.purchaseLimitCents;
-    launch.description = LAUNCH_PLAN.description;
-    launch.active = true;
-    launch.sortOrder = LAUNCH_PLAN.sortOrder;
-    if (priceChanged) launch.stripePriceId = null;
+  for (const definition of CLUB_PLANS) {
+    let plan = await planRepo.findOne({ where: { code: definition.code } });
+    if (!plan) {
+      plan = planRepo.create(definition);
+    } else {
+      const priceChanged = plan.monthlyPriceCents !== definition.monthlyPriceCents;
+      plan.name = definition.name;
+      plan.monthlyPriceCents = definition.monthlyPriceCents;
+      plan.compareAtPriceCents = definition.compareAtPriceCents;
+      plan.purchaseLimitCents = definition.purchaseLimitCents;
+      plan.description = definition.description;
+      plan.active = true;
+      plan.sortOrder = definition.sortOrder;
+      if (priceChanged) plan.stripePriceId = null;
+    }
+    await planRepo.save(plan);
   }
-  await planRepo.save(launch);
 
+  const activeCodes = new Set(CLUB_PLANS.map((plan) => plan.code));
   const others = await planRepo.find();
   for (const plan of others) {
-    if (plan.code === LAUNCH_PLAN.code || !plan.active) continue;
+    if (activeCodes.has(plan.code) || !plan.active) continue;
     plan.active = false;
     await planRepo.save(plan);
-    console.log(`Plano desativado para o lançamento: ${plan.code}`);
+    console.log(`Plano desativado: ${plan.code}`);
   }
 }
 
 export async function seedInitialData() {
-  await syncLaunchPlan();
+  await syncClubPlans();
   await ensureStripePrices();
 
   const userRepo = AppDataSource.getRepository(User);

@@ -59,6 +59,10 @@ const checkoutSchema = z.object({
   paymentMethodType: z.enum(['CREDIT_CARD', 'PIX_RECURRING']).optional().default('CREDIT_CARD'),
 });
 
+const upgradeSchema = z.object({
+  planId: z.string().uuid(),
+});
+
 function pixCheckoutUnavailableMessage(error: unknown) {
   const raw = error instanceof Error ? error.message : String(error);
   if (/pix|excluded_payment_method|payment_method_options|no valid payment method|invalid payment method/i.test(raw)) {
@@ -215,6 +219,7 @@ function subscriptionPublicView(subscription: Subscription) {
     plan: subscription.plan
       ? {
           id: subscription.plan.id,
+          code: subscription.plan.code,
           name: subscription.plan.name,
           monthlyPriceCents: subscription.plan.monthlyPriceCents,
         }
@@ -226,6 +231,67 @@ function isIgnorableStripeCancelError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return /no such subscription|already been canceled|subscription is canceled/i.test(message);
 }
+
+subscriptionsRouter.post('/upgrade', async (req, res) => {
+  const parsed = upgradeSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: 'Plano inválido.', issues: parsed.error.flatten() });
+
+  try {
+    const subscriptionRepo = AppDataSource.getRepository(Subscription);
+    const subscription = await subscriptionRepo.findOne({
+      where: { user: { id: req.auth!.sub }, status: SubscriptionStatus.ACTIVE },
+      order: { createdAt: 'DESC' },
+    });
+    if (!subscription) return res.status(404).json({ message: 'Nenhuma assinatura ativa encontrada.' });
+    if (subscription.cancelledAt) {
+      return res.status(409).json({ message: 'Não é possível fazer upgrade de uma assinatura com cancelamento agendado.' });
+    }
+
+    const targetPlan = await AppDataSource.getRepository(Plan).findOne({
+      where: { id: parsed.data.planId, active: true },
+    });
+    if (!targetPlan || !targetPlan.stripePriceId || targetPlan.monthlyPriceCents == null) {
+      return res.status(400).json({ message: 'Plano indisponível para upgrade na Stripe.' });
+    }
+    if (subscription.plan.code !== 'LAUNCH' || targetPlan.code !== 'PRIORITY') {
+      return res.status(409).json({ message: 'Este upgrade não está disponível para a assinatura atual.' });
+    }
+    if (!subscription.gatewaySubscriptionId) {
+      return res.status(409).json({ message: 'A assinatura atual não está vinculada à Stripe.' });
+    }
+
+    const stripe = requireStripe();
+    const current = await stripe.subscriptions.retrieve(subscription.gatewaySubscriptionId);
+    const item = current.items.data[0];
+    if (!item) return res.status(409).json({ message: 'A assinatura Stripe não possui um item atualizável.' });
+
+    const upgraded = await stripe.subscriptions.update(subscription.gatewaySubscriptionId, {
+      items: [{ id: item.id, price: targetPlan.stripePriceId }],
+      metadata: {
+        ...current.metadata,
+        userId: req.auth!.sub,
+        planId: targetPlan.id,
+      },
+      proration_behavior: 'always_invoice',
+      payment_behavior: 'error_if_incomplete',
+      expand: ['default_payment_method', 'latest_invoice'],
+    });
+
+    const saved = await upsertLocalSubscription({
+      user: subscription.user,
+      plan: targetPlan,
+      stripeSubscription: upgraded,
+    });
+    await syncStripeInvoices(saved);
+    await auditSubscription(req.auth!.sub, saved.id, 'SUBSCRIPTION_UPGRADED');
+    return res.json(subscriptionPublicView(saved));
+  } catch (error) {
+    console.error('Falha ao fazer upgrade da assinatura Stripe:', error);
+    return res.status(400).json({
+      message: 'Não foi possível concluir o upgrade na Stripe. Confira a forma de pagamento e tente novamente.',
+    });
+  }
+});
 
 subscriptionsRouter.post('/:id/cancel', async (req, res) => {
   try {
