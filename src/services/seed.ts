@@ -21,7 +21,7 @@ const PRIORITY_PLAN = {
   monthlyPriceCents: 29797,
   compareAtPriceCents: null as number | null,
   purchaseLimitCents: null as number | null,
-  description: 'Acesso completo ao XNaMai Club, com ofertas e condições especiais, atendimento prioritário e prioridade nos pedidos.',
+  description: 'Acesso completo ao XNaMai Club e ao Grupo XNaMai Lab, com ofertas e condições especiais, atendimento prioritário e prioridade nos pedidos.',
   active: true,
   sortOrder: 2,
 };
