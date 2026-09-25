@@ -20,7 +20,7 @@ const PRIORITY_PLAN = {
   code: 'PRIORITY',
   name: 'Plano Prioridade',
   monthlyPriceCents: 29797,
-  compareAtPriceCents: null as number | null,
+  compareAtPriceCents: 59997,
   purchaseLimitCents: null as number | null,
   description: 'Acesso completo ao XNaMai Club e ao Grupo XNaMai Lab, com ofertas e condições especiais, atendimento prioritário e prioridade nos pedidos.',
   active: true,

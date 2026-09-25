@@ -74,6 +74,7 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     assert.equal(plans.body[0].monthlyPriceCents, 14997);
     assert.equal(plans.body[1].code, 'PRIORITY');
     assert.equal(plans.body[1].monthlyPriceCents, 29797);
+    assert.equal(plans.body[1].compareAtPriceCents, 59997);
     assert.match(plans.body[1].description, /prioridade nos pedidos/i);
 
     assert.equal((await request('/api/subscriptions/me')).status, 404);
