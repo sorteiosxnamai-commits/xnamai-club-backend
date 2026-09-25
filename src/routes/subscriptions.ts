@@ -243,9 +243,6 @@ subscriptionsRouter.post('/upgrade', async (req, res) => {
       order: { createdAt: 'DESC' },
     });
     if (!subscription) return res.status(404).json({ message: 'Nenhuma assinatura ativa encontrada.' });
-    if (subscription.cancelledAt) {
-      return res.status(409).json({ message: 'Não é possível fazer upgrade de uma assinatura com cancelamento agendado.' });
-    }
 
     const targetPlan = await AppDataSource.getRepository(Plan).findOne({
       where: { id: parsed.data.planId, active: true },
@@ -274,6 +271,7 @@ subscriptionsRouter.post('/upgrade', async (req, res) => {
       },
       proration_behavior: 'always_invoice',
       payment_behavior: 'error_if_incomplete',
+      cancel_at_period_end: false,
       expand: ['default_payment_method', 'latest_invoice'],
     });
 
