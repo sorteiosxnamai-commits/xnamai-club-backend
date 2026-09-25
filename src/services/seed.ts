@@ -7,11 +7,11 @@ import { User, UserRole } from '../entities/User';
 
 const LAUNCH_PLAN = {
   code: 'LAUNCH',
-  name: 'Plano Basic de Lançamento',
+  name: 'Plano Basic',
   monthlyPriceCents: 14997,
   compareAtPriceCents: 29997,
   purchaseLimitCents: null as number | null,
-  description: 'Oferta de lançamento: acesso completo ao XNaMai Club.',
+  description: 'Acesso aos preços exclusivos do XNaMai Club, com pedidos feitos com antecedência mínima de 24 horas.',
   active: true,
   sortOrder: 1,
 };
@@ -22,7 +22,7 @@ const PRIORITY_PLAN = {
   monthlyPriceCents: 29797,
   compareAtPriceCents: 59997,
   purchaseLimitCents: null as number | null,
-  description: 'Acesso completo ao XNaMai Club e ao Grupo XNaMai Lab, com ofertas e condições especiais, atendimento prioritário e prioridade nos pedidos.',
+  description: 'O Fast Pass da XNaMai: pedidos no mesmo dia com antecedência mínima de 6 horas e prioridade na separação.',
   active: true,
   sortOrder: 2,
 };

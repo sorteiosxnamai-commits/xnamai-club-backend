@@ -75,7 +75,7 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     assert.equal(plans.body[1].code, 'PRIORITY');
     assert.equal(plans.body[1].monthlyPriceCents, 29797);
     assert.equal(plans.body[1].compareAtPriceCents, 59997);
-    assert.match(plans.body[1].description, /prioridade nos pedidos/i);
+    assert.match(plans.body[1].description, /Fast Pass.*6 horas.*prioridade na separação/i);
 
     assert.equal((await request('/api/subscriptions/me')).status, 404);
     assert.equal((await request('/api/me/dashboard')).body.subscription, null);
@@ -118,7 +118,7 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     const profileRow = desk.body.joined.find((row) => row.email === profile.email);
     const secondRow = desk.body.joined.find((row) => row.email === 'second@example.invalid');
     assert.equal(profileRow.subscription.plan.code, 'LAUNCH');
-    assert.equal(profileRow.subscription.plan.name, 'Plano Basic de Lançamento');
+    assert.equal(profileRow.subscription.plan.name, 'Plano Basic');
     assert.equal(profileRow.cashback.eligible, true);
     assert.equal(secondRow.document, '11222333000181');
     assert.equal(secondRow.phone, '(11) 98888-7777');
