@@ -291,6 +291,40 @@ subscriptionsRouter.post('/upgrade', async (req, res) => {
   }
 });
 
+subscriptionsRouter.post('/:id/resume', async (req, res) => {
+  try {
+    const id = z.string().uuid().safeParse(req.params.id);
+    if (!id.success) return res.status(404).json({ message: 'Assinatura não encontrada.' });
+
+    const subscription = await AppDataSource.getRepository(Subscription).findOne({
+      where: { id: id.data, user: { id: req.auth!.sub } },
+    });
+    if (!subscription) return res.status(404).json({ message: 'Assinatura não encontrada.' });
+    if (subscription.status !== SubscriptionStatus.ACTIVE || !subscription.cancelledAt) {
+      return res.status(409).json({ message: 'Esta assinatura não possui cancelamento agendado.' });
+    }
+    if (!subscription.gatewaySubscriptionId) {
+      return res.status(409).json({ message: 'A assinatura atual não está vinculada à Stripe.' });
+    }
+
+    const stripe = requireStripe();
+    const resumed = await stripe.subscriptions.update(subscription.gatewaySubscriptionId, {
+      cancel_at_period_end: false,
+      expand: ['default_payment_method', 'latest_invoice'],
+    });
+    const saved = await upsertLocalSubscription({
+      user: subscription.user,
+      plan: subscription.plan,
+      stripeSubscription: resumed,
+    });
+    await auditSubscription(req.auth!.sub, saved.id, 'SUBSCRIPTION_RESUMED');
+    return res.json(subscriptionPublicView(saved));
+  } catch (error) {
+    console.error('Falha ao retomar assinatura Stripe:', error);
+    return res.status(400).json({ message: 'Não foi possível retomar a assinatura. Tente novamente.' });
+  }
+});
+
 subscriptionsRouter.post('/:id/cancel', async (req, res) => {
   try {
     const id = z.string().uuid().safeParse(req.params.id);
