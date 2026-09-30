@@ -29,6 +29,10 @@ export class User {
   @Column({ type: 'varchar', nullable: true })
   document?: string;
 
+  // Mantém cadastros antigos duplicados intactos, mas garante unicidade para novas contas.
+  @Column({ name: 'registration_document_key', type: 'varchar', nullable: true, unique: true, select: false })
+  registrationDocumentKey?: string | null;
+
   @Column({ type: 'varchar', nullable: true })
   city?: string;
 

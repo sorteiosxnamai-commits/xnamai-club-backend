@@ -66,6 +66,18 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     assert.equal((await request('/api/auth/me')).body.email, profile.email);
     assert.equal((await request('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: profile.email, password: profile.password }) })).status, 200);
 
+    const duplicateDocument = await request('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...profile,
+        email: 'outro-email@example.invalid',
+        document: '529.982.247-25',
+      }),
+    });
+    assert.equal(duplicateDocument.status, 409);
+    assert.match(duplicateDocument.body.message, /CPF ou CNPJ já cadastrado/);
+    assert.match(duplicateDocument.body.issues.fieldErrors.document[0], /já cadastrado/);
+
     const plan = await AppDataSource.getRepository(Plan).findOneByOrFail({ code: 'LAUNCH' });
     const priorityPlan = await AppDataSource.getRepository(Plan).findOneByOrFail({ code: 'PRIORITY' });
     const plans = await request('/api/plans');

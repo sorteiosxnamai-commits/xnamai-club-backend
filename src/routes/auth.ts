@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Response, Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { AppDataSource } from '../config/data-source';
@@ -56,6 +56,23 @@ function firstValidationMessage(error: z.ZodError, fallback: string) {
   return fieldMessages[0] || issues.formErrors[0] || fallback;
 }
 
+function documentAlreadyRegistered(res: Response) {
+  return res.status(409).json({
+    message: 'CPF ou CNPJ já cadastrado. Entre com a conta existente.',
+    issues: {
+      fieldErrors: { document: ['CPF ou CNPJ já cadastrado.'] },
+      formErrors: [],
+    },
+  });
+}
+
+function isRegistrationDocumentConflict(error: unknown) {
+  const details = error as { code?: string; constraint?: string; message?: string };
+  const text = `${details.constraint || ''} ${details.message || ''}`;
+  return (details.code === '23505' || details.code === 'SQLITE_CONSTRAINT')
+    && /registration_document_key/i.test(text);
+}
+
 const registerSchema = z.object({
   name: z.string().trim().min(2, 'Informe seu nome completo.'),
   email: z.string().email('Informe um e-mail válido.'),
@@ -83,14 +100,24 @@ authRouter.post('/register', async (req, res) => {
   const email = parsed.data.email.toLowerCase();
   if (await repo.findOne({ where: { email } })) return res.status(409).json({ message: 'E-mail já cadastrado.' });
 
+  const document = onlyDigits(parsed.data.document);
+  if (await repo.findOne({ where: { document } })) return documentAlreadyRegistered(res);
+
   const { password, ...profile } = parsed.data;
-  const user = await repo.save(repo.create({
-    ...profile,
-    email,
-    document: onlyDigits(profile.document),
-    passwordHash: await bcrypt.hash(password, 12),
-    role: UserRole.CUSTOMER,
-  }));
+  let user: User;
+  try {
+    user = await repo.save(repo.create({
+      ...profile,
+      email,
+      document,
+      registrationDocumentKey: document,
+      passwordHash: await bcrypt.hash(password, 12),
+      role: UserRole.CUSTOMER,
+    }));
+  } catch (error) {
+    if (isRegistrationDocumentConflict(error)) return documentAlreadyRegistered(res);
+    throw error;
+  }
 
   const token = signAccessToken({ sub: user.id, email: user.email, role: user.role });
   res.status(201).json({ token, user: publicUser(user) });
