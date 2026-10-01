@@ -3,7 +3,8 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { AppDataSource } from '../config/data-source';
 import { User, UserRole } from '../entities/User';
-import { requireAuth, signAccessToken } from '../middleware/auth';
+import { requireAuth, requireRole, signAccessToken } from '../middleware/auth';
+import { audit } from '../services/audit';
 
 export const authRouter = Router();
 
@@ -143,6 +144,34 @@ authRouter.post('/login', async (req, res) => {
 
   const token = signAccessToken({ sub: user.id, email: user.email, role: user.role });
   res.json({ token, user: publicUser(user) });
+});
+
+authRouter.post('/users/:id/reset-password', requireAuth, requireRole(UserRole.ADMIN, UserRole.SUPPORT), async (req, res) => {
+  const id = z.string().uuid().safeParse(req.params.id);
+  const parsed = z.object({
+    password: z.string().min(12, 'A nova senha deve ter pelo menos 12 caracteres.'),
+  }).safeParse(req.body);
+  if (!id.success) return res.status(404).json({ message: 'Cliente não encontrado.' });
+  if (!parsed.success) {
+    return res.status(400).json({
+      message: firstValidationMessage(parsed.error, 'Nova senha inválida.'),
+      issues: parsed.error.flatten(),
+    });
+  }
+
+  const repo = AppDataSource.getRepository(User);
+  const user = await repo.findOne({ where: { id: id.data, role: UserRole.CUSTOMER } });
+  if (!user) return res.status(404).json({ message: 'Cliente não encontrado.' });
+
+  user.passwordHash = await bcrypt.hash(parsed.data.password, 12);
+  await repo.save(user);
+  await audit({
+    actorUserId: req.auth!.sub,
+    action: 'CUSTOMER_PASSWORD_RESET',
+    entity: 'User',
+    entityId: user.id,
+  });
+  return res.json({ message: 'Senha redefinida com sucesso.' });
 });
 
 authRouter.get('/me', requireAuth, async (req, res) => {

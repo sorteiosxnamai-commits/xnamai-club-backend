@@ -78,6 +78,32 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     assert.match(duplicateDocument.body.message, /CPF ou CNPJ já cadastrado/);
     assert.match(duplicateDocument.body.issues.fieldErrors.document[0], /já cadastrado/);
 
+    const customerToken = token;
+    const forbiddenReset = await request(`/api/auth/users/${registered.body.user.id}/reset-password`, {
+      method: 'POST',
+      body: JSON.stringify({ password: 'NovaSenhaForte123!' }),
+    });
+    assert.equal(forbiddenReset.status, 403);
+
+    const supportLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'atendimento@xnamai.local', password: 'Atende123!' }),
+    });
+    assert.equal(supportLogin.status, 200);
+    token = supportLogin.body.token;
+    const reset = await request(`/api/auth/users/${registered.body.user.id}/reset-password`, {
+      method: 'POST',
+      body: JSON.stringify({ password: 'NovaSenhaForte123!' }),
+    });
+    assert.equal(reset.status, 200);
+    assert.match(reset.body.message, /sucesso/);
+    const newPasswordLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: profile.email, password: 'NovaSenhaForte123!' }),
+    });
+    assert.equal(newPasswordLogin.status, 200);
+    token = customerToken;
+
     const plan = await AppDataSource.getRepository(Plan).findOneByOrFail({ code: 'LAUNCH' });
     const priorityPlan = await AppDataSource.getRepository(Plan).findOneByOrFail({ code: 'PRIORITY' });
     const plans = await request('/api/plans');
