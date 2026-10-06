@@ -5,13 +5,14 @@ import { LAUNCH_CASHBACK_CUTOFF } from '../config/business-rules';
 import { User, UserRole } from '../entities/User';
 import { SubscriptionStatus } from '../entities/Subscription';
 import { Invoice, InvoiceStatus } from '../entities/Invoice';
-import { PaymentMethod } from '../entities/PaymentMethod';
+import { PaymentMethod, PaymentMethodType } from '../entities/PaymentMethod';
+import { boletoCustomerIds } from '../services/boleto-customers';
 import { audit } from '../services/audit';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache';
 import { membershipAccess } from '../services/membership-access';
 import { repairPaidThroughSubscriptions, syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
 
-const MEMBERS_CACHE_KEY = 'atendimento:members:v4';
+const MEMBERS_CACHE_KEY = 'atendimento:members:v5';
 const MEMBERS_CACHE_TTL = 45;
 
 export const atendimentoRouter = Router();
@@ -60,7 +61,13 @@ function latestPaymentMethod(user: User) {
   )[0];
 }
 
-function serializeMember(user: User) {
+function isBoletoCustomer(user: User, boletoIds: Set<string>) {
+  if ((user.paymentMethods ?? []).some((method) => method.type === PaymentMethodType.BOLETO)) return true;
+  const customerId = user.stripeCustomerId || latestSubscription(user)?.gatewayCustomerId;
+  return Boolean(customerId && boletoIds.has(customerId));
+}
+
+function serializeMember(user: User, boletoIds: Set<string>) {
   const latest = latestSubscription(user);
   const access = membershipAccess(latest, latest?.invoices ?? []);
   const paymentMethod = latestPaymentMethod(user);
@@ -81,6 +88,7 @@ function serializeMember(user: User) {
     state: user.state ?? null,
     phone: user.phone ?? null,
     createdAt: user.createdAt,
+    boleto: isBoletoCustomer(user, boletoIds),
     subscription: latest
       ? {
           id: latest.id,
@@ -157,10 +165,17 @@ async function listMembers() {
     }
   }
 
+  let boletoIds = new Set<string>();
+  try {
+    boletoIds = await boletoCustomerIds();
+  } catch (error) {
+    console.error('Falha ao identificar pagamentos por boleto:', error);
+  }
+
   const joined = [];
   const unsigned = [];
   for (const user of users) {
-    const member = serializeMember(user);
+    const member = serializeMember(user, boletoIds);
     if (hasSigned(user)) joined.push(member);
     else unsigned.push(member);
   }
@@ -218,12 +233,18 @@ atendimentoRouter.post('/members/:id/cashback-use', async (req, res) => {
     return res.status(404).json({ message: 'Cliente do clube n\u00e3o encontrado.' });
   }
 
-  const member = serializeMember(user);
+  let boletoIds = new Set<string>();
+  try {
+    boletoIds = await boletoCustomerIds();
+  } catch (error) {
+    console.error('Falha ao identificar pagamentos por boleto:', error);
+  }
+  const member = serializeMember(user, boletoIds);
   if (!member.cashback.eligible) {
     return res.status(400).json({ message: 'Este cliente n\u00e3o tem cashback de lan\u00e7amento.' });
   }
   if (user.launchCashbackUsedAt) {
-    return res.status(409).json({ message: 'Cashback j\u00e1 utilizado.', member: serializeMember(user) });
+    return res.status(409).json({ message: 'Cashback j\u00e1 utilizado.', member: serializeMember(user, boletoIds) });
   }
 
   user.launchCashbackUsedAt = new Date();
@@ -238,5 +259,5 @@ atendimentoRouter.post('/members/:id/cashback-use', async (req, res) => {
     metadata: { amountCents: member.cashback.amountCents },
   });
 
-  res.json(serializeMember(user));
+  res.json(serializeMember(user, boletoIds));
 });
