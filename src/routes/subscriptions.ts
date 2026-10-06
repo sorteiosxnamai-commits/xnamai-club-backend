@@ -72,9 +72,10 @@ function pixCheckoutUnavailableMessage(error: unknown) {
 }
 
 function stripePaymentMethodType(pm: Stripe.Subscription['default_payment_method'], fallback: PaymentMethodType) {
-  if (typeof pm === 'object' && pm && (pm as { type?: string }).type === 'pix') {
-    return PaymentMethodType.PIX_RECURRING;
-  }
+  const type = typeof pm === 'object' && pm ? pm.type : undefined;
+  if (type === 'pix') return PaymentMethodType.PIX_RECURRING;
+  if (type === 'boleto') return PaymentMethodType.BOLETO;
+  if (type === 'card') return PaymentMethodType.CREDIT_CARD;
   return fallback;
 }
 

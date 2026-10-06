@@ -4,6 +4,7 @@ import { User } from './User';
 export enum PaymentMethodType {
   CREDIT_CARD = 'CREDIT_CARD',
   PIX_RECURRING = 'PIX_RECURRING',
+  BOLETO = 'BOLETO',
 }
 
 @Entity('payment_methods')

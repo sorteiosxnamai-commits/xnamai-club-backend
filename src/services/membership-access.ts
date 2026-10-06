@@ -27,8 +27,15 @@ function addCalendarMonth(from: Date) {
   return next;
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+
+function openPeriodEnd(start: Date | null, end: Date | null) {
+  if (start && end && end.getTime() <= start.getTime() + HOUR_MS) return addCalendarMonth(start);
+  return end;
+}
+
 export function membershipAccess(
-  subscription: Pick<Subscription, 'status' | 'currentPeriodEnd'> | null | undefined,
+  subscription: Pick<Subscription, 'status' | 'currentPeriodStart' | 'currentPeriodEnd'> | null | undefined,
   invoices: Array<Pick<Invoice, 'status' | 'paidAt' | 'createdAt'>> = [],
 ): MembershipAccess {
   if (!subscription || subscription.status === SubscriptionStatus.PENDING) return emptyAccess;
@@ -42,19 +49,14 @@ export function membershipAccess(
   const renewed = paid.length >= 2;
   const renewedAt = renewed ? paid[0] : null;
   const paidUntil = paid[0] ? addCalendarMonth(paid[0]) : null;
+  const periodEnd = openPeriodEnd(asDate(subscription.currentPeriodStart), asDate(subscription.currentPeriodEnd));
+  const validUntil = [periodEnd, paidUntil]
+    .filter((date): date is Date => Boolean(date))
+    .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
 
   if (subscription.status === SubscriptionStatus.CANCELLED) {
-    return {
-      active: false,
-      validUntil: asDate(subscription.currentPeriodEnd) ?? paidUntil,
-      renewed,
-      renewedAt,
-    };
+    return { active: false, validUntil, renewed, renewedAt };
   }
-
-  const validUntil = subscription.status === SubscriptionStatus.ACTIVE
-    ? asDate(subscription.currentPeriodEnd) ?? paidUntil
-    : paidUntil;
 
   const active = validUntil
     ? validUntil.getTime() > Date.now()

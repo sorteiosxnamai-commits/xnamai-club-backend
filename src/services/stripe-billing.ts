@@ -10,20 +10,16 @@ import { PaymentMethod, PaymentMethodType } from '../entities/PaymentMethod';
 import { audit } from './audit';
 
 function billingPeriod(subscription: Stripe.Subscription) {
-  const item = subscription.items.data[0] as (Stripe.SubscriptionItem & {
-    current_period_start?: number;
-    current_period_end?: number;
-  }) | undefined;
+  const item = subscription.items?.data?.[0];
   const raw = subscription as Stripe.Subscription & {
     current_period_start?: number;
     current_period_end?: number;
   };
   const startUnix = raw.current_period_start ?? item?.current_period_start ?? subscription.start_date;
-  const endUnix = raw.current_period_end ?? item?.current_period_end ?? startUnix;
-  return {
-    start: new Date(startUnix * 1000),
-    end: new Date(endUnix * 1000),
-  };
+  let endUnix = raw.current_period_end ?? item?.current_period_end ?? 0;
+  const start = new Date(startUnix * 1000);
+  if (!endUnix || endUnix <= startUnix) endUnix = Math.floor(addCalendarMonth(start).getTime() / 1000);
+  return { start, end: new Date(endUnix * 1000) };
 }
 
 function mapStripeStatus(status: Stripe.Subscription.Status): SubscriptionStatus {
@@ -73,28 +69,35 @@ function paymentDetailsFromStripe(params: {
   const fallbackType = params.stripeSubscription.metadata?.paymentMethodType === 'PIX_RECURRING'
     ? PaymentMethodType.PIX_RECURRING
     : PaymentMethodType.CREDIT_CARD;
+  const pm = params.stripeSubscription.default_payment_method;
+  if (pm && typeof pm !== 'string') {
+    const pmType = pm.type;
+    const card = pm.type === 'card' ? pm.card : undefined;
+    const type = pmType === 'boleto'
+      ? PaymentMethodType.BOLETO
+      : pmType === 'pix'
+        ? PaymentMethodType.PIX_RECURRING
+        : pmType === 'card'
+          ? PaymentMethodType.CREDIT_CARD
+          : params.paymentMethod?.type ?? fallbackType;
+    return {
+      stripeId: pm.id,
+      brand: type === PaymentMethodType.CREDIT_CARD ? card?.brand ?? null : null,
+      last4: type === PaymentMethodType.CREDIT_CARD ? card?.last4 ?? null : null,
+      type,
+    };
+  }
+
   if (params.paymentMethod?.stripeId || params.paymentMethod?.type) {
     return {
-      stripeId: params.paymentMethod.stripeId ?? null,
+      stripeId: params.paymentMethod.stripeId ?? (typeof pm === 'string' ? pm : null),
       brand: params.paymentMethod.brand ?? null,
       last4: params.paymentMethod.last4 ?? null,
       type: params.paymentMethod.type ?? fallbackType,
     };
   }
 
-  const pm = params.stripeSubscription.default_payment_method;
-  if (!pm || typeof pm === 'string') {
-    return { stripeId: typeof pm === 'string' ? pm : null, brand: null, last4: null, type: fallbackType };
-  }
-
-  const isPix = (pm as { type?: string }).type === 'pix';
-  const card = 'card' in pm ? pm.card : undefined;
-  return {
-    stripeId: pm.id,
-    brand: card?.brand ?? null,
-    last4: card?.last4 ?? null,
-    type: isPix ? PaymentMethodType.PIX_RECURRING : fallbackType,
-  };
+  return { stripeId: typeof pm === 'string' ? pm : null, brand: null, last4: null, type: fallbackType };
 }
 
 export async function upsertLocalSubscription(params: {
@@ -126,7 +129,7 @@ export async function upsertLocalSubscription(params: {
   subscription.user = user;
   subscription.plan = plan;
   subscription.status = status;
-  subscription.startedAt = status === SubscriptionStatus.ACTIVE ? periodStart : subscription.startedAt;
+  if (!subscription.startedAt && status === SubscriptionStatus.ACTIVE) subscription.startedAt = periodStart;
   subscription.currentPeriodStart = periodStart;
   subscription.currentPeriodEnd = periodEnd;
   if (stripeSubscription.canceled_at) {
@@ -160,6 +163,12 @@ export async function upsertLocalSubscription(params: {
         cardLastFour: paymentMethod.last4 ?? null,
         active: true,
       }));
+    } else if (existing.type !== paymentMethod.type || existing.cardLastFour !== (paymentMethod.last4 ?? null)) {
+      existing.type = paymentMethod.type;
+      existing.cardBrand = paymentMethod.brand ?? null;
+      existing.cardLastFour = paymentMethod.last4 ?? null;
+      existing.active = true;
+      await pmRepo.save(existing);
     }
   }
 
@@ -314,13 +323,21 @@ export async function syncRecentStripeSubscriptions(limit = 40) {
     await upsertLocalSubscription({ user, plan, stripeSubscription });
   }
 
-  const subscriptions = await client.subscriptions.list({
-    limit,
-    status: 'all',
-    expand: ['data.default_payment_method', 'data.latest_invoice'],
-  });
-  const seen = new Set(subscriptions.data.map((item) => item.id));
-  await mapPool(subscriptions.data, 6, async (stripeSubscription) => {
+  const collected: Stripe.Subscription[] = [];
+  let startingAfter: string | undefined;
+  while (collected.length < 500) {
+    const page = await client.subscriptions.list({
+      limit: 100,
+      status: 'active',
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+      expand: ['data.default_payment_method', 'data.latest_invoice'],
+    });
+    collected.push(...page.data);
+    if (!page.has_more || page.data.length === 0) break;
+    startingAfter = page.data[page.data.length - 1]?.id;
+  }
+  const seen = new Set(collected.map((item) => item.id));
+  await mapPool(collected, 6, async (stripeSubscription) => {
     try {
       await upsert(stripeSubscription);
     } catch (error) {

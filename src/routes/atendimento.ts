@@ -11,7 +11,7 @@ import { cacheDel, cacheGet, cacheSet } from '../services/cache';
 import { membershipAccess } from '../services/membership-access';
 import { repairPaidThroughSubscriptions, syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
 
-const MEMBERS_CACHE_KEY = 'atendimento:members:v3';
+const MEMBERS_CACHE_KEY = 'atendimento:members:v4';
 const MEMBERS_CACHE_TTL = 45;
 
 export const atendimentoRouter = Router();
@@ -166,8 +166,11 @@ async function listMembers() {
   }
 
   joined.sort((a, b) => {
-    const aTime = a.subscription?.startedAt || a.createdAt;
-    const bTime = b.subscription?.startedAt || b.createdAt;
+    const aActive = a.subscription?.active ? 1 : 0;
+    const bActive = b.subscription?.active ? 1 : 0;
+    if (aActive !== bActive) return bActive - aActive;
+    const aTime = a.subscription?.validUntil || a.subscription?.startedAt || a.createdAt;
+    const bTime = b.subscription?.validUntil || b.subscription?.startedAt || b.createdAt;
     return +new Date(bTime) - +new Date(aTime);
   });
 
