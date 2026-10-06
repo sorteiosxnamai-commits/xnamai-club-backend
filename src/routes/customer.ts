@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/auth';
 import { Subscription } from '../entities/Subscription';
 import { Invoice } from '../entities/Invoice';
 import { PaymentMethod } from '../entities/PaymentMethod';
+import { membershipAccess } from '../services/membership-access';
 import { syncStripeInvoices } from '../services/stripe-billing';
 
 export const customerRouter = Router();
@@ -33,5 +34,10 @@ customerRouter.get('/dashboard', async (req, res) => {
     })
     : [];
 
-  res.json({ subscription, paymentMethod, invoices });
+  res.json({
+    subscription,
+    paymentMethod,
+    invoices,
+    access: membershipAccess(subscription, invoices),
+  });
 });

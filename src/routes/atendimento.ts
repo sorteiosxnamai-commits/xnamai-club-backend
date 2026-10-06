@@ -1,13 +1,17 @@
 import { Router } from 'express';
+import { In } from 'typeorm';
 import { AppDataSource } from '../config/data-source';
 import { LAUNCH_CASHBACK_CUTOFF } from '../config/business-rules';
 import { User, UserRole } from '../entities/User';
 import { SubscriptionStatus } from '../entities/Subscription';
+import { Invoice, InvoiceStatus } from '../entities/Invoice';
+import { PaymentMethod } from '../entities/PaymentMethod';
 import { audit } from '../services/audit';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache';
+import { membershipAccess } from '../services/membership-access';
 import { repairPaidThroughSubscriptions, syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
 
-const MEMBERS_CACHE_KEY = 'atendimento:members:v2';
+const MEMBERS_CACHE_KEY = 'atendimento:members:v3';
 const MEMBERS_CACHE_TTL = 45;
 
 export const atendimentoRouter = Router();
@@ -42,8 +46,24 @@ function latestSubscription(user: User) {
   )[0];
 }
 
+async function findByIds<T>(ids: string[], load: (chunk: string[]) => Promise<T[]>) {
+  const rows: T[] = [];
+  for (let index = 0; index < ids.length; index += 400) {
+    rows.push(...await load(ids.slice(index, index + 400)));
+  }
+  return rows;
+}
+
+function latestPaymentMethod(user: User) {
+  return [...(user.paymentMethods ?? [])].sort(
+    (a, b) => Number(b.active) - Number(a.active) || +new Date(b.createdAt) - +new Date(a.createdAt),
+  )[0];
+}
+
 function serializeMember(user: User) {
   const latest = latestSubscription(user);
+  const access = membershipAccess(latest, latest?.invoices ?? []);
+  const paymentMethod = latestPaymentMethod(user);
   const launch = launchSubscription(user);
   const launchJoined = Boolean(launch && (JOINED_STATUSES.has(launch.status) || launch.startedAt));
   const grandfathered = Boolean(
@@ -67,6 +87,10 @@ function serializeMember(user: User) {
           status: latest.status,
           startedAt: latest.startedAt,
           currentPeriodEnd: latest.currentPeriodEnd,
+          validUntil: access.validUntil,
+          active: access.active,
+          renewed: access.renewed,
+          renewedAt: access.renewedAt,
           plan: latest.plan
             ? {
                 id: latest.plan.id,
@@ -75,6 +99,13 @@ function serializeMember(user: User) {
                 monthlyPriceCents: latest.plan.monthlyPriceCents,
               }
             : null,
+        }
+      : null,
+    paymentMethod: paymentMethod
+      ? {
+          type: paymentMethod.type,
+          cardBrand: paymentMethod.cardBrand ?? null,
+          cardLastFour: paymentMethod.cardLastFour ?? null,
         }
       : null,
     cashback: {
@@ -95,6 +126,36 @@ async function listMembers() {
     .orderBy('user.createdAt', 'DESC')
     .take(1000)
     .getMany();
+
+  for (const user of users) {
+    user.paymentMethods = [];
+    for (const subscription of user.subscriptions ?? []) subscription.invoices = [];
+  }
+
+  const subscriptionIds = users.flatMap((user) => (user.subscriptions ?? []).map((subscription) => subscription.id));
+  const userIds = users.map((user) => user.id);
+  if (subscriptionIds.length) {
+    const invoices = await findByIds(subscriptionIds, (ids) => AppDataSource.getRepository(Invoice).find({
+      where: { status: InvoiceStatus.PAID, subscription: { id: In(ids) } },
+    }));
+    const bySubscription = new Map(
+      users.flatMap((user) => (user.subscriptions ?? []).map((subscription) => [subscription.id, subscription] as const)),
+    );
+    for (const invoice of invoices) {
+      const subscription = invoice.subscription?.id ? bySubscription.get(invoice.subscription.id) : undefined;
+      if (subscription) subscription.invoices.push(invoice);
+    }
+  }
+  if (userIds.length) {
+    const methods = await findByIds(userIds, (ids) => AppDataSource.getRepository(PaymentMethod).find({
+      where: { user: { id: In(ids) } },
+    }));
+    const byUser = new Map(users.map((user) => [user.id, user] as const));
+    for (const method of methods) {
+      const owner = method.user?.id ? byUser.get(method.user.id) : undefined;
+      if (owner) owner.paymentMethods.push(method);
+    }
+  }
 
   const joined = [];
   const unsigned = [];
@@ -148,7 +209,7 @@ atendimentoRouter.post('/members/:id/cashback-use', async (req, res) => {
   const userRepo = AppDataSource.getRepository(User);
   const user = await userRepo.findOne({
     where: { id: req.params.id, role: UserRole.CUSTOMER },
-    relations: ['subscriptions', 'subscriptions.plan'],
+    relations: ['subscriptions', 'subscriptions.plan', 'subscriptions.invoices', 'paymentMethods'],
   });
   if (!user || !hasJoined(user)) {
     return res.status(404).json({ message: 'Cliente do clube n\u00e3o encontrado.' });
