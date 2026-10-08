@@ -44,6 +44,7 @@ function originVariants(value: string): string[] {
 
 export function createApp() {
   const app = express();
+  app.set('trust proxy', 1);
   const extraOrigins = (process.env.CORS_ORIGINS || '')
     .split(',')
     .map((item) => item.trim())

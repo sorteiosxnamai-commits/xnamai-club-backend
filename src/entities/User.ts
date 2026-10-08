@@ -1,4 +1,4 @@
-import { Column, CreateDateColumn, Entity, OneToMany, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import { Column, CreateDateColumn, Entity, Index, OneToMany, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 import { Subscription } from './Subscription';
 import { PaymentMethod } from './PaymentMethod';
 import { dateTimeColumnType } from './column-types';
@@ -19,6 +19,16 @@ export class User {
 
   @Column({ type: 'varchar' })
   passwordHash!: string;
+
+  @Index('idx_users_password_reset_token_hash')
+  @Column({ name: 'password_reset_token_hash', type: 'varchar', length: 64, nullable: true, select: false })
+  passwordResetTokenHash!: string | null;
+
+  @Column({ name: 'password_reset_expires_at', type: dateTimeColumnType, nullable: true, select: false })
+  passwordResetExpiresAt!: Date | null;
+
+  @Column({ name: 'auth_version', type: 'integer', default: 0 })
+  authVersion!: number;
 
   @Column({ type: 'varchar' })
   name!: string;

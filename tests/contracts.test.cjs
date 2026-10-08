@@ -12,6 +12,10 @@ process.env.TYPEORM_SYNCHRONIZE = 'true';
 process.env.JWT_SECRET = 'local-contract-test-secret';
 process.env.STRIPE_SECRET_KEY = '';
 process.env.REDIS_URL = '';
+process.env.GMAIL_SENDER = '';
+process.env.GOOGLE_CLIENT_ID = '';
+process.env.GOOGLE_CLIENT_SECRET = '';
+process.env.GOOGLE_REFRESH_TOKEN = '';
 
 const { AppDataSource } = require('../dist/config/data-source');
 const { Plan } = require('../dist/entities/Plan');
@@ -56,6 +60,10 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
   try {
     const invalid = await request('/api/auth/register', { method: 'POST', body: JSON.stringify({ name: 'Teste' }) });
     assert.equal(invalid.status, 400);
+    const unconfiguredRecovery = await request('/api/auth/forgot-password', {
+      method: 'POST', body: JSON.stringify({ email: 'nobody@example.invalid' }),
+    });
+    assert.equal(unconfiguredRecovery.status, 503);
     const profile = { name: 'Cliente Teste', email: 'contract@example.invalid', password: 'SenhaTeste123!',
       city: 'São Paulo', state: 'SP', document: '52998224725' };
     const registered = await request('/api/auth/register', { method: 'POST', body: JSON.stringify(profile) });
@@ -179,6 +187,94 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
   } finally {
     await new Promise(resolve => server.close(resolve));
     await AppDataSource.destroy();
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('customer recovery keeps account responses uniform and consumes tokens once', async () => {
+  const { createHash } = require('node:crypto');
+  const db = require('../dist/config/data-source').AppDataSource;
+  await db.initialize();
+  const { User, UserRole } = require('../dist/entities/User');
+  const { createPasswordResetRouter } = require('../dist/routes/password-reset');
+  const { signAccessToken } = require('../dist/middleware/auth');
+  const sent = [];
+  const app = express().use(express.json()).use('/api/auth', createPasswordResetRouter(async (to, link) => { sent.push({ to, link }); }), authRouter);
+  const server = await new Promise(resolve => { const listener = app.listen(0, '127.0.0.1', () => resolve(listener)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = async (path, body) => {
+    const response = await fetch(`${base}/api/auth/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    return { status: response.status, body: await response.json() };
+  };
+  try {
+    const repo = db.getRepository(User);
+    const user = await repo.save(repo.create({ email: 'recovery@example.invalid', name: 'Recovery', passwordHash: await bcrypt.hash('oldpassword', 12), role: UserRole.CUSTOMER }));
+    await repo.save(repo.create({ email: 'staff@example.invalid', name: 'Staff', passwordHash: await bcrypt.hash('staffpassword', 12), role: UserRole.SUPPORT }));
+    const oldJwt = signAccessToken({ sub: user.id, email: user.email, role: user.role });
+    const missing = await post('forgot-password', { email: 'missing@example.invalid' });
+    const exists = await post('forgot-password', { email: user.email });
+    const staff = await post('forgot-password', { email: 'staff@example.invalid' });
+    assert.equal(missing.status, 202);
+    assert.deepEqual(exists, missing);
+    assert.deepEqual(staff, missing);
+    assert.equal(sent.length, 1);
+    const first = new URL(sent[0].link).searchParams.get('token');
+    assert.equal(first.length, 64);
+    const stored = await repo.createQueryBuilder('user').addSelect('user.passwordResetTokenHash').where('user.id = :id', { id: user.id }).getOneOrFail();
+    assert.equal(stored.passwordResetTokenHash, createHash('sha256').update(first).digest('hex'));
+    assert.equal((await post('reset-password', { token: 'x'.repeat(64), password: 'newpassword' })).status, 400);
+    await post('forgot-password', { email: user.email });
+    const second = new URL(sent[1].link).searchParams.get('token');
+    assert.equal((await post('reset-password', { token: first, password: 'newpassword' })).status, 400);
+    assert.equal((await post('reset-password', { token: second, password: 'newpassword' })).status, 200);
+    assert.equal((await post('reset-password', { token: second, password: 'anotherpassword' })).status, 400);
+    assert.ok(await bcrypt.compare('newpassword', (await repo.findOneByOrFail({ id: user.id })).passwordHash));
+    assert.equal((await post('login', { email: user.email, password: 'oldpassword' })).status, 401);
+    assert.equal((await post('login', { email: user.email, password: 'newpassword' })).status, 200);
+    assert.equal((await post('forgot-password', { email: user.email })).status, 202);
+    const expired = await repo.createQueryBuilder('user').addSelect('user.passwordResetExpiresAt').where('user.id = :id', { id: user.id }).getOneOrFail();
+    expired.passwordResetExpiresAt = new Date(Date.now() - 1000);
+    await repo.save(expired);
+    assert.equal((await post('reset-password', { token: new URL(sent[2].link).searchParams.get('token'), password: 'anotherpassword' })).status, 400);
+    assert.equal((await post('forgot-password', { email: user.email })).status, 429);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      assert.equal((await post('reset-password', { token: 'f'.repeat(64), password: 'anotherpassword' })).status, 400);
+    }
+    assert.equal((await post('reset-password', { token: 'f'.repeat(64), password: 'anotherpassword' })).status, 429);
+    const authApp = express().get('/me', require('../dist/middleware/auth').requireAuth, (_req, res) => res.json({ ok: true }));
+    const authServer = await new Promise(resolve => { const listener = authApp.listen(0, '127.0.0.1', () => resolve(listener)); });
+    try {
+      const response = await fetch(`http://127.0.0.1:${authServer.address().port}/me`, { headers: { authorization: `Bearer ${oldJwt}` } });
+      assert.equal(response.status, 401);
+    } finally { await new Promise(resolve => authServer.close(resolve)); }
+
+    const failedMailUser = await repo.save(repo.create({ email: 'failed-mail@example.invalid', name: 'Failed Mail', passwordHash: await bcrypt.hash('oldpassword', 12), role: UserRole.CUSTOMER }));
+    const failedMailApp = express().use(express.json()).use('/api/auth', createPasswordResetRouter(async () => { throw new Error('provider failure'); }));
+    const failedMailServer = await new Promise(resolve => { const listener = failedMailApp.listen(0, '127.0.0.1', () => resolve(listener)); });
+    try {
+      const response = await fetch(`http://127.0.0.1:${failedMailServer.address().port}/api/auth/forgot-password`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: failedMailUser.email }),
+      });
+      assert.equal(response.status, 202);
+      const row = await repo.createQueryBuilder('user').addSelect('user.passwordResetTokenHash').where('user.id = :id', { id: failedMailUser.id }).getOneOrFail();
+      assert.equal(row.passwordResetTokenHash, null);
+    } finally { await new Promise(resolve => failedMailServer.close(resolve)); }
+
+    const { GmailDeliveryUncertainError } = require('../dist/services/recovery-mail');
+    const uncertainUser = await repo.save(repo.create({ email: 'uncertain-mail@example.invalid', name: 'Uncertain Mail', passwordHash: await bcrypt.hash('oldpassword', 12), role: UserRole.CUSTOMER }));
+    const uncertainApp = express().use(express.json()).use('/api/auth', createPasswordResetRouter(async () => { throw new GmailDeliveryUncertainError(); }));
+    const uncertainServer = await new Promise(resolve => { const listener = uncertainApp.listen(0, '127.0.0.1', () => resolve(listener)); });
+    try {
+      const response = await fetch(`http://127.0.0.1:${uncertainServer.address().port}/api/auth/forgot-password`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: uncertainUser.email }),
+      });
+      assert.equal(response.status, 202);
+      const row = await repo.createQueryBuilder('user').addSelect('user.passwordResetTokenHash').where('user.id = :id', { id: uncertainUser.id }).getOneOrFail();
+      assert.ok(row.passwordResetTokenHash);
+    } finally { await new Promise(resolve => uncertainServer.close(resolve)); }
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    await db.destroy();
     fs.rmSync(dbPath, { force: true });
   }
 });

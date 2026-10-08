@@ -5,6 +5,7 @@ import { AppDataSource } from '../config/data-source';
 import { User, UserRole } from '../entities/User';
 import { requireAuth, requireRole, signAccessToken } from '../middleware/auth';
 import { audit } from '../services/audit';
+import { createPasswordResetRouter } from './password-reset';
 
 export const authRouter = Router();
 
@@ -120,7 +121,7 @@ authRouter.post('/register', async (req, res) => {
     throw error;
   }
 
-  const token = signAccessToken({ sub: user.id, email: user.email, role: user.role });
+  const token = signAccessToken({ sub: user.id, email: user.email, role: user.role, authVersion: user.authVersion || 0 });
   res.status(201).json({ token, user: publicUser(user) });
 });
 
@@ -142,7 +143,7 @@ authRouter.post('/login', async (req, res) => {
     return res.status(401).json({ message: 'E-mail ou senha inválidos.' });
   }
 
-  const token = signAccessToken({ sub: user.id, email: user.email, role: user.role });
+  const token = signAccessToken({ sub: user.id, email: user.email, role: user.role, authVersion: user.authVersion || 0 });
   res.json({ token, user: publicUser(user) });
 });
 
@@ -179,3 +180,5 @@ authRouter.get('/me', requireAuth, async (req, res) => {
   if (!user) return res.status(404).json({ message: 'Usuário não encontrado.' });
   res.json(publicUser(user));
 });
+
+authRouter.use(createPasswordResetRouter());

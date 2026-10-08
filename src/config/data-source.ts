@@ -9,8 +9,9 @@ import { PaymentMethod } from '../entities/PaymentMethod';
 import { Invoice } from '../entities/Invoice';
 import { PaymentAttempt } from '../entities/PaymentAttempt';
 import { AuditLog } from '../entities/AuditLog';
+import { RecoveryRateLimit } from '../entities/RecoveryRateLimit';
 
-const entities = [User, Plan, Subscription, PaymentMethod, Invoice, PaymentAttempt, AuditLog];
+const entities = [User, Plan, Subscription, PaymentMethod, Invoice, PaymentAttempt, AuditLog, RecoveryRateLimit];
 const dbType = (process.env.DB_TYPE || 'sqlite').toLowerCase();
 const synchronize = (process.env.TYPEORM_SYNCHRONIZE || 'true') === 'true';
 

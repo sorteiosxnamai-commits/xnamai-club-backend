@@ -20,4 +20,8 @@ export const env = {
   },
   publicApiUrl: (process.env.PUBLIC_API_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, ''),
   redisUrl: (process.env.REDIS_URL || '').trim(),
+  gmailSender: (process.env.GMAIL_SENDER || '').trim(),
+  googleClientId: (process.env.GOOGLE_CLIENT_ID || '').trim(),
+  googleClientSecret: (process.env.GOOGLE_CLIENT_SECRET || '').trim(),
+  googleRefreshToken: (process.env.GOOGLE_REFRESH_TOKEN || '').trim(),
 };
