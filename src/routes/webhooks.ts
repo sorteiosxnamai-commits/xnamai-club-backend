@@ -6,7 +6,7 @@ import { AppDataSource } from '../config/data-source';
 import { Plan } from '../entities/Plan';
 import { User } from '../entities/User';
 import { applyStripeInvoice } from '../routes/subscriptions';
-import { applySetupPaymentMethod, upsertLocalSubscription } from '../services/stripe-billing';
+import { applyOneTimePixPayment, applySetupPaymentMethod, upsertLocalSubscription } from '../services/stripe-billing';
 
 export const webhooksRouter = Router();
 
@@ -30,6 +30,9 @@ export async function stripeWebhookHandler(req: Request, res: Response) {
       const session = event.data.object as Stripe.Checkout.Session;
       if (session.mode === 'setup') {
         await applySetupPaymentMethod(session);
+      }
+      if (session.mode === 'payment') {
+        await applyOneTimePixPayment(session);
       }
       if (session.mode === 'subscription' && session.subscription && session.metadata?.userId && session.metadata?.planId) {
         const user = await AppDataSource.getRepository(User).findOne({ where: { id: session.metadata.userId } });

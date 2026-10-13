@@ -36,6 +36,19 @@ function addCalendarMonth(from: Date) {
   return next;
 }
 
+export const PIX_MONTH_PURPOSE = 'pix_month';
+
+export function pixMonthWindow(
+  paidAt: Date,
+  current: { status?: string | null; currentPeriodStart?: Date | null; currentPeriodEnd?: Date | null },
+) {
+  const end = current.currentPeriodEnd ? new Date(current.currentPeriodEnd) : null;
+  const covered = current.status === SubscriptionStatus.ACTIVE && Boolean(end && end.getTime() > paidAt.getTime());
+  const periodStart = covered ? new Date(current.currentPeriodStart ?? paidAt) : paidAt;
+  const periodEnd = addCalendarMonth(covered && end ? end : paidAt);
+  return { periodStart, periodEnd };
+}
+
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 function laterDate(a: Date, b: Date) {
@@ -452,6 +465,105 @@ export async function auditSubscription(userId: string, subscriptionId: string, 
 }
 
 export const PAYMENT_METHOD_UPDATE_PURPOSE = 'payment_method_update';
+
+async function pixPaidAt(session: Stripe.Checkout.Session) {
+  const stripeClient = requireStripe();
+  const intentId = typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id;
+  if (!intentId) return new Date();
+  const intent = await stripeClient.paymentIntents.retrieve(intentId, { expand: ['latest_charge'] });
+  const charge = intent.latest_charge;
+  const created = typeof charge === 'object' && charge ? charge.created : intent.created;
+  return created ? new Date(created * 1000) : new Date();
+}
+
+export async function applyOneTimePixPayment(session: Stripe.Checkout.Session) {
+  if (session.mode !== 'payment' || session.metadata?.purpose !== PIX_MONTH_PURPOSE) return null;
+  if (session.status !== 'complete' || session.payment_status !== 'paid') {
+    throw new Error('Pagamento PIX ainda não confirmado.');
+  }
+
+  const userId = session.metadata.userId;
+  const planId = session.metadata.planId;
+  if (!userId || !planId) throw new Error('Sessão PIX sem assinatura.');
+
+  const user = await AppDataSource.getRepository(User).findOneBy({ id: userId });
+  const plan = await AppDataSource.getRepository(Plan).findOneBy({ id: planId });
+  if (!user || !plan || plan.monthlyPriceCents == null) throw new Error('Plano do PIX não encontrado.');
+
+  const gatewayId = (typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id) || session.id;
+  const invoiceRepo = AppDataSource.getRepository(Invoice);
+  const already = await invoiceRepo.findOne({ where: { gatewayInvoiceId: gatewayId } });
+  if (already?.subscription) return already.subscription;
+
+  const paidAt = await pixPaidAt(session);
+  const subscriptionRepo = AppDataSource.getRepository(Subscription);
+  let subscription = await subscriptionRepo.findOne({
+    where: { user: { id: user.id } },
+    order: { createdAt: 'DESC' },
+  });
+  if (subscription?.gatewaySubscriptionId && subscription.status === SubscriptionStatus.ACTIVE) {
+    throw new Error('O usuário já possui uma assinatura ativa.');
+  }
+  if (!subscription || subscription.gatewaySubscriptionId) {
+    subscription = subscriptionRepo.create({
+      user,
+      plan,
+      gatewayCustomerId: typeof session.customer === 'string' ? session.customer : session.customer?.id ?? user.stripeCustomerId ?? null,
+      gatewaySubscriptionId: null,
+    });
+  }
+
+  const window = pixMonthWindow(paidAt, subscription);
+  subscription.user = user;
+  subscription.plan = plan;
+  subscription.status = SubscriptionStatus.ACTIVE;
+  subscription.startedAt = subscription.startedAt ?? paidAt;
+  subscription.currentPeriodStart = window.periodStart;
+  subscription.currentPeriodEnd = window.periodEnd;
+  subscription.cancelledAt = null;
+  subscription.gatewayCustomerId = typeof session.customer === 'string'
+    ? session.customer
+    : session.customer?.id ?? subscription.gatewayCustomerId ?? user.stripeCustomerId ?? null;
+  subscription.gatewaySubscriptionId = null;
+  await subscriptionRepo.save(subscription);
+
+  await invoiceRepo.save(invoiceRepo.create({
+    subscription,
+    amountCents: plan.monthlyPriceCents,
+    status: InvoiceStatus.PAID,
+    dueDate: window.periodEnd,
+    paidAt,
+    gatewayInvoiceId: gatewayId,
+  }));
+
+  const pmRepo = AppDataSource.getRepository(PaymentMethod);
+  const providerPaymentMethodId = `pix:${user.id}`;
+  const existingMethod = await pmRepo.findOne({ where: { providerPaymentMethodId } });
+  if (!existingMethod) {
+    await pmRepo.save(pmRepo.create({
+      user,
+      type: PaymentMethodType.PIX_RECURRING,
+      provider: 'stripe',
+      providerPaymentMethodId,
+      cardBrand: null,
+      cardLastFour: null,
+      active: true,
+    }));
+  } else {
+    existingMethod.type = PaymentMethodType.PIX_RECURRING;
+    existingMethod.active = true;
+    await pmRepo.save(existingMethod);
+  }
+  const methods = await pmRepo.find({ where: { user: { id: user.id }, active: true } });
+  const stale = methods.filter((method) => method.providerPaymentMethodId !== providerPaymentMethodId);
+  if (stale.length) {
+    for (const method of stale) method.active = false;
+    await pmRepo.save(stale);
+  }
+
+  await auditSubscription(user.id, subscription.id, 'PIX_MONTH_PAID');
+  return subscription;
+}
 
 export type PaymentMethodUpdateResult = {
   message: string;

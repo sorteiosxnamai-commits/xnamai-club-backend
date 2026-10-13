@@ -9,7 +9,7 @@ import { Plan } from '../entities/Plan';
 import { User } from '../entities/User';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
 import { PaymentMethod, PaymentMethodType } from '../entities/PaymentMethod';
-import { applySetupPaymentMethod, auditSubscription, PAYMENT_METHOD_UPDATE_PURPOSE, recordStripeInvoice, syncStripeInvoices, upsertLocalSubscription } from '../services/stripe-billing';
+import { applyOneTimePixPayment, applySetupPaymentMethod, auditSubscription, PAYMENT_METHOD_UPDATE_PURPOSE, PIX_MONTH_PURPOSE, recordStripeInvoice, syncStripeInvoices, upsertLocalSubscription } from '../services/stripe-billing';
 
 export const subscriptionsRouter = Router();
 subscriptionsRouter.use(requireAuth);
@@ -66,7 +66,7 @@ const upgradeSchema = z.object({
 function pixCheckoutUnavailableMessage(error: unknown) {
   const raw = error instanceof Error ? error.message : String(error);
   if (/pix|excluded_payment_method|payment_method_options|no valid payment method|invalid payment method/i.test(raw)) {
-    return 'PIX recorrente (Pix Automático) não está habilitado nesta conta Stripe. Ative Pix e Pix Automático no Dashboard — contas brasileiras só têm Pix Automático por convite. Enquanto isso, use cartão.';
+    return 'PIX não está habilitado nesta conta Stripe. Ative PIX no Dashboard. Enquanto isso, use cartão.';
   }
   return raw || 'Falha ao criar checkout Stripe.';
 }
@@ -88,16 +88,77 @@ subscriptionsRouter.post('/checkout', async (req, res) => {
     const stripe = requireStripe();
     const user = await AppDataSource.getRepository(User).findOneByOrFail({ id: req.auth!.sub });
     const plan = await AppDataSource.getRepository(Plan).findOne({ where: { id: planId, active: true } });
-    if (!plan || !plan.stripePriceId || plan.monthlyPriceCents == null) {
+    if (!plan || plan.monthlyPriceCents == null) {
       return res.status(400).json({ message: 'Plano indisponível para assinatura Stripe.' });
     }
 
     const existing = await AppDataSource.getRepository(Subscription).findOne({
       where: { user: { id: user.id }, status: SubscriptionStatus.ACTIVE },
+      order: { createdAt: 'DESC' },
     });
-    if (existing) return res.status(409).json({ message: 'O usuário já possui uma assinatura ativa.' });
+    if (existing?.gatewaySubscriptionId) {
+      return res.status(409).json({ message: 'O usuário já possui uma assinatura ativa.' });
+    }
+    const pixCovered = Boolean(existing?.currentPeriodEnd && new Date(existing.currentPeriodEnd).getTime() > Date.now());
+    if (paymentMethodType !== 'PIX_RECURRING' && pixCovered) {
+      return res.status(409).json({ message: 'O PIX deste mês ainda está válido. O cartão fica disponível depois do vencimento.' });
+    }
 
     const customerId = await getOrCreateStripeCustomer(user);
+
+    if (paymentMethodType === 'PIX_RECURRING') {
+      if (plan.monthlyPriceCents == null) {
+        return res.status(400).json({ message: 'Plano indisponível para pagamento PIX.' });
+      }
+      const session = await stripe.checkout.sessions.create({
+        mode: 'payment',
+        customer: customerId,
+        client_reference_id: user.id,
+        locale: 'pt-BR',
+        success_url: `${env.frontendUrl}/confirmacao?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${env.frontendUrl}/checkout`,
+        payment_method_types: ['pix'],
+        line_items: [{
+          quantity: 1,
+          price_data: {
+            currency: 'brl',
+            unit_amount: plan.monthlyPriceCents,
+            product_data: { name: `${plan.name} — 1 mês` },
+          },
+        }],
+        metadata: {
+          userId: user.id,
+          planId: plan.id,
+          paymentMethodType,
+          purpose: PIX_MONTH_PURPOSE,
+        },
+        payment_intent_data: {
+          metadata: {
+            userId: user.id,
+            planId: plan.id,
+            paymentMethodType,
+            purpose: PIX_MONTH_PURPOSE,
+          },
+        },
+      });
+      if (!session.payment_method_types?.includes('pix')) {
+        if (session.id) {
+          try { await stripe.checkout.sessions.expire(session.id); } catch { /* sessão órfã sem PIX */ }
+        }
+        return res.status(400).json({
+          message: 'PIX não está habilitado nesta conta Stripe. Ative PIX no Dashboard. Enquanto isso, use cartão.',
+        });
+      }
+      return res.json({
+        url: session.url,
+        nextBillingDate: nextCalendarMonth().toISOString(),
+      });
+    }
+
+    if (!plan.stripePriceId) {
+      return res.status(400).json({ message: 'Plano indisponível para assinatura Stripe.' });
+    }
+
     const sessionParams: Stripe.Checkout.SessionCreateParams = {
       mode: 'subscription',
       customer: customerId,
@@ -112,34 +173,7 @@ subscriptionsRouter.post('/checkout', async (req, res) => {
       metadata: { userId: user.id, planId: plan.id, paymentMethodType },
     };
 
-    if (paymentMethodType === 'PIX_RECURRING') {
-      Object.assign(sessionParams, {
-        excluded_payment_method_types: ['card'],
-        payment_method_options: {
-          pix: {
-            setup_future_usage: 'off_session',
-            mandate_options: {
-              amount: plan.monthlyPriceCents,
-              amount_type: 'fixed',
-              currency: 'brl',
-              payment_schedule: 'monthly',
-              reference: plan.name.slice(0, 35),
-            },
-          },
-        },
-      });
-    }
-
     const session = await stripe.checkout.sessions.create(sessionParams);
-
-    if (paymentMethodType === 'PIX_RECURRING' && !session.payment_method_types?.includes('pix')) {
-      if (session.id) {
-        try { await stripe.checkout.sessions.expire(session.id); } catch { /* sessão órfã sem PIX */ }
-      }
-      return res.status(400).json({
-        message: 'PIX recorrente (Pix Automático) não está habilitado nesta conta Stripe. Ative Pix e Pix Automático no Dashboard — contas brasileiras só têm Pix Automático por convite. Enquanto isso, use cartão.',
-      });
-    }
 
     res.json({
       url: session.url,
@@ -167,6 +201,21 @@ subscriptionsRouter.get('/confirm', async (req, res) => {
   }
   if (session.status !== 'complete') {
     return res.status(402).json({ message: 'Pagamento ainda não confirmado.' });
+  }
+
+  if (session.metadata?.purpose === PIX_MONTH_PURPOSE) {
+    try {
+      const subscription = await applyOneTimePixPayment(session);
+      if (!subscription) return res.status(400).json({ message: 'Esta sessão não é um PIX mensal.' });
+      return res.json({
+        subscription,
+        nextBillingDate: subscription.currentPeriodEnd,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Não foi possível confirmar o PIX.';
+      const status = message === 'Pagamento PIX ainda não confirmado.' ? 402 : 400;
+      return res.status(status).json({ message });
+    }
   }
 
   const planId = session.metadata?.planId;
