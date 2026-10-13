@@ -8,8 +8,8 @@ import { requireAuth } from '../middleware/auth';
 import { Plan } from '../entities/Plan';
 import { User } from '../entities/User';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
-import { PaymentMethodType } from '../entities/PaymentMethod';
-import { auditSubscription, recordStripeInvoice, syncStripeInvoices, upsertLocalSubscription } from '../services/stripe-billing';
+import { PaymentMethod, PaymentMethodType } from '../entities/PaymentMethod';
+import { applySetupPaymentMethod, auditSubscription, PAYMENT_METHOD_UPDATE_PURPOSE, recordStripeInvoice, syncStripeInvoices, upsertLocalSubscription } from '../services/stripe-billing';
 
 export const subscriptionsRouter = Router();
 subscriptionsRouter.use(requireAuth);
@@ -198,6 +198,92 @@ subscriptionsRouter.get('/confirm', async (req, res) => {
     subscription,
     nextBillingDate: subscription.currentPeriodEnd,
   });
+});
+
+subscriptionsRouter.post('/payment-method', async (req, res) => {
+  try {
+    const user = await AppDataSource.getRepository(User).findOneByOrFail({ id: req.auth!.sub });
+    const subscription = await AppDataSource.getRepository(Subscription).findOne({
+      where: { user: { id: user.id } },
+      order: { createdAt: 'DESC' },
+    });
+    if (!subscription) return res.status(404).json({ message: 'Nenhuma assinatura encontrada.' });
+    if (subscription.status === SubscriptionStatus.CANCELLED) {
+      return res.status(409).json({ message: 'Assinatura cancelada. Para usar outro cartão, assine novamente.' });
+    }
+
+    const paymentMethod = await AppDataSource.getRepository(PaymentMethod).findOne({
+      where: { user: { id: user.id }, active: true },
+      order: { createdAt: 'DESC' },
+    });
+    if (paymentMethod?.type === PaymentMethodType.BOLETO) {
+      return res.status(409).json({ message: 'Quem paga no boleto não troca o cartão por aqui. Fale com o atendimento.' });
+    }
+    if (!subscription.gatewaySubscriptionId) {
+      return res.status(409).json({ message: 'A assinatura atual não está vinculada à Stripe.' });
+    }
+
+    const customerId = subscription.gatewayCustomerId || user.stripeCustomerId;
+    if (!customerId) {
+      return res.status(409).json({ message: 'A assinatura atual não está vinculada à Stripe.' });
+    }
+
+    const stripe = requireStripe();
+    const session = await stripe.checkout.sessions.create({
+      mode: 'setup',
+      customer: customerId,
+      client_reference_id: user.id,
+      locale: 'pt-BR',
+      currency: 'brl',
+      payment_method_types: ['card'],
+      success_url: `${env.frontendUrl}/app?card_session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${env.frontendUrl}/app`,
+      metadata: {
+        userId: user.id,
+        subscriptionId: subscription.id,
+        purpose: PAYMENT_METHOD_UPDATE_PURPOSE,
+      },
+      setup_intent_data: {
+        metadata: {
+          userId: user.id,
+          subscriptionId: subscription.id,
+        },
+      },
+    });
+    if (!session.url) return res.status(400).json({ message: 'A Stripe não devolveu a página para trocar o cartão.' });
+    res.json({ url: session.url });
+  } catch (error) {
+    console.error('Falha ao abrir troca de cartão:', error);
+    const raw = error instanceof Error ? error.message : '';
+    const message = /STRIPE_SECRET_KEY/i.test(raw)
+      ? 'A troca de cartão está indisponível no momento. Tente novamente mais tarde.'
+      : raw || 'Não foi possível abrir a troca de cartão.';
+    return res.status(400).json({ message });
+  }
+});
+
+subscriptionsRouter.get('/payment-method/confirm', async (req, res) => {
+  const sessionId = z.string().startsWith('cs_').safeParse(req.query.sessionId);
+  if (!sessionId.success) return res.status(400).json({ message: 'Sessão Stripe inválida.' });
+
+  try {
+    const stripe = requireStripe();
+    const session = await stripe.checkout.sessions.retrieve(sessionId.data);
+    if (session.metadata?.userId !== req.auth!.sub) {
+      return res.status(403).json({ message: 'Sessão não pertence a este usuário.' });
+    }
+    const result = await applySetupPaymentMethod(session);
+    if (!result) return res.status(400).json({ message: 'Esta sessão não é uma troca de cartão.' });
+    res.json(result);
+  } catch (error) {
+    console.error('Falha ao confirmar troca de cartão:', error);
+    const raw = error instanceof Error ? error.message : '';
+    const message = /STRIPE_SECRET_KEY/i.test(raw)
+      ? 'A troca de cartão está indisponível no momento. Tente novamente mais tarde.'
+      : raw || 'Não foi possível confirmar o cartão.';
+    const status = message === 'Troca de cartão ainda não confirmada.' ? 402 : 400;
+    return res.status(status).json({ message });
+  }
 });
 
 subscriptionsRouter.get('/me', async (req, res) => {

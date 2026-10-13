@@ -124,6 +124,8 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     assert.match(plans.body[1].description, /Fast Pass.*6 horas.*prioridade na separação/i);
 
     assert.equal((await request('/api/subscriptions/me')).status, 404);
+    assert.equal((await request('/api/subscriptions/payment-method', { method: 'POST', body: '{}' })).status, 404);
+    assert.equal((await request('/api/subscriptions/payment-method/confirm?sessionId=abc')).status, 400);
     assert.equal((await request('/api/me/dashboard')).body.subscription, null);
     const checkout = await request('/api/subscriptions/checkout', { method: 'POST',
       body: JSON.stringify({ planId: plan.id, paymentMethodType: 'CREDIT_CARD' }) });
@@ -136,6 +138,16 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
       startedAt: new Date(), currentPeriodStart: new Date(), currentPeriodEnd: new Date(Date.now() + 86400000) });
     assert.equal((await request('/api/subscriptions/me')).body.status, 'ACTIVE');
     assert.equal((await request('/api/me/dashboard')).body.subscription.status, 'ACTIVE');
+    const changeCard = await request('/api/subscriptions/payment-method', { method: 'POST', body: '{}' });
+    assert.equal(changeCard.status, 409);
+    assert.match(changeCard.body.message, /Stripe/);
+    const { PaymentMethod, PaymentMethodType } = require('../dist/entities/PaymentMethod');
+    await AppDataSource.getRepository(PaymentMethod).save({
+      user, type: PaymentMethodType.BOLETO, provider: 'stripe', providerPaymentMethodId: 'pm_boleto_contract', active: true,
+    });
+    const boletoCard = await request('/api/subscriptions/payment-method', { method: 'POST', body: '{}' });
+    assert.equal(boletoCard.status, 409);
+    assert.match(boletoCard.body.message, /boleto/i);
     assert.equal((await request('/api/subscriptions/upgrade', { method: 'POST',
       body: JSON.stringify({ planId: priorityPlan.id }) })).status, 400); // Price Stripe ainda ausente no teste.
     // --- atendimento publico, sem login ---

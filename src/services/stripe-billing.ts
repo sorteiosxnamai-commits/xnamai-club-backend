@@ -1,6 +1,6 @@
 import Stripe from 'stripe';
 import { AppDataSource } from '../config/data-source';
-import { stripe } from '../config/stripe';
+import { requireStripe, stripe } from '../config/stripe';
 import { Plan } from '../entities/Plan';
 import { User } from '../entities/User';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
@@ -163,12 +163,25 @@ export async function upsertLocalSubscription(params: {
         cardLastFour: paymentMethod.last4 ?? null,
         active: true,
       }));
-    } else if (existing.type !== paymentMethod.type || existing.cardLastFour !== (paymentMethod.last4 ?? null)) {
-      existing.type = paymentMethod.type;
-      existing.cardBrand = paymentMethod.brand ?? null;
-      existing.cardLastFour = paymentMethod.last4 ?? null;
-      existing.active = true;
-      await pmRepo.save(existing);
+    } else {
+      let changed = false;
+      if (existing.type !== paymentMethod.type) {
+        existing.type = paymentMethod.type;
+        changed = true;
+      }
+      if (paymentMethod.brand && existing.cardBrand !== paymentMethod.brand) {
+        existing.cardBrand = paymentMethod.brand;
+        changed = true;
+      }
+      if (paymentMethod.last4 && existing.cardLastFour !== paymentMethod.last4) {
+        existing.cardLastFour = paymentMethod.last4;
+        changed = true;
+      }
+      if (!existing.active) {
+        existing.active = true;
+        changed = true;
+      }
+      if (changed) await pmRepo.save(existing);
     }
   }
 
@@ -436,4 +449,139 @@ export async function recordStripeInvoice(stripeInvoice: Stripe.Invoice, subscri
 
 export async function auditSubscription(userId: string, subscriptionId: string, action: string) {
   await audit({ actorUserId: userId, action, entity: 'Subscription', entityId: subscriptionId, metadata: { provider: 'stripe' } });
+}
+
+export const PAYMENT_METHOD_UPDATE_PURPOSE = 'payment_method_update';
+
+export type PaymentMethodUpdateResult = {
+  message: string;
+  invoicePaid: boolean;
+  chargeFailed: boolean;
+};
+
+function stripeErrorText(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function invoiceAlreadyPaid(error: unknown) {
+  const code = (error as { code?: string }).code;
+  return code === 'invoice_already_paid' || /already paid/i.test(stripeErrorText(error));
+}
+
+async function keepOnlyActivePaymentMethod(userId: string, providerPaymentMethodId: string) {
+  const pmRepo = AppDataSource.getRepository(PaymentMethod);
+  const methods = await pmRepo.find({ where: { user: { id: userId }, active: true } });
+  const stale = methods.filter((method) => method.providerPaymentMethodId !== providerPaymentMethodId);
+  if (stale.length === 0) return;
+  for (const method of stale) method.active = false;
+  await pmRepo.save(stale);
+}
+
+export async function applySetupPaymentMethod(session: Stripe.Checkout.Session): Promise<PaymentMethodUpdateResult | null> {
+  if (session.metadata?.purpose !== PAYMENT_METHOD_UPDATE_PURPOSE || session.mode !== 'setup') return null;
+  if (session.status !== 'complete') {
+    throw new Error('Troca de cartão ainda não confirmada.');
+  }
+
+  const userId = session.metadata.userId;
+  const subscriptionId = session.metadata.subscriptionId;
+  if (!userId || !subscriptionId) throw new Error('Sessão sem assinatura.');
+
+  const user = await AppDataSource.getRepository(User).findOneBy({ id: userId });
+  const subscription = await AppDataSource.getRepository(Subscription).findOne({
+    where: { id: subscriptionId, user: { id: userId } },
+  });
+  if (!user || !subscription?.gatewaySubscriptionId) {
+    throw new Error('Assinatura não encontrada para esta troca de cartão.');
+  }
+
+  const stripeClient = requireStripe();
+  const setupIntentId = typeof session.setup_intent === 'string'
+    ? session.setup_intent
+    : session.setup_intent?.id;
+  if (!setupIntentId) throw new Error('A Stripe não devolveu o cartão desta sessão.');
+
+  const setupIntent = await stripeClient.setupIntents.retrieve(setupIntentId, {
+    expand: ['payment_method'],
+  });
+  const rawPaymentMethod = setupIntent.payment_method;
+  const paymentMethodId = typeof rawPaymentMethod === 'string' ? rawPaymentMethod : rawPaymentMethod?.id;
+  if (!paymentMethodId) throw new Error('A Stripe não devolveu o cartão desta sessão.');
+
+  const paymentMethod = typeof rawPaymentMethod === 'object' && rawPaymentMethod
+    ? rawPaymentMethod
+    : await stripeClient.paymentMethods.retrieve(paymentMethodId);
+  if (paymentMethod.type !== 'card') {
+    throw new Error('A sessão não confirmou um cartão.');
+  }
+
+  const customerId = subscription.gatewayCustomerId
+    || user.stripeCustomerId
+    || (typeof session.customer === 'string' ? session.customer : session.customer?.id);
+  if (!customerId) throw new Error('A assinatura atual não está vinculada à Stripe.');
+
+  await stripeClient.customers.update(customerId, {
+    invoice_settings: { default_payment_method: paymentMethodId },
+  });
+
+  const current = await stripeClient.subscriptions.retrieve(subscription.gatewaySubscriptionId);
+  let updated = await stripeClient.subscriptions.update(subscription.gatewaySubscriptionId, {
+    default_payment_method: paymentMethodId,
+    metadata: { ...current.metadata, paymentMethodType: 'CREDIT_CARD' },
+    expand: ['default_payment_method', 'latest_invoice'],
+  });
+
+  let invoicePaid = false;
+  let chargeFailed = false;
+  const latestInvoice = typeof updated.latest_invoice === 'string'
+    ? await stripeClient.invoices.retrieve(updated.latest_invoice)
+    : updated.latest_invoice;
+  if (latestInvoice?.id && latestInvoice.status === 'open' && latestInvoice.amount_due > 0) {
+    try {
+      await stripeClient.invoices.pay(latestInvoice.id, { payment_method: paymentMethodId });
+      invoicePaid = true;
+      updated = await stripeClient.subscriptions.retrieve(subscription.gatewaySubscriptionId, {
+        expand: ['default_payment_method', 'latest_invoice'],
+      });
+    } catch (error) {
+      if (invoiceAlreadyPaid(error)) {
+        invoicePaid = true;
+        updated = await stripeClient.subscriptions.retrieve(subscription.gatewaySubscriptionId, {
+          expand: ['default_payment_method', 'latest_invoice'],
+        });
+      } else {
+        chargeFailed = true;
+        console.warn('Cartão salvo, mas a fatura em aberto não foi paga:', stripeErrorText(error));
+      }
+    }
+  }
+
+  const saved = await upsertLocalSubscription({
+    user,
+    plan: subscription.plan,
+    stripeSubscription: updated,
+    paymentMethod: {
+      stripeId: paymentMethodId,
+      brand: paymentMethod.card?.brand ?? null,
+      last4: paymentMethod.card?.last4 ?? null,
+      type: PaymentMethodType.CREDIT_CARD,
+    },
+  });
+  await keepOnlyActivePaymentMethod(user.id, paymentMethodId);
+  try {
+    await syncStripeInvoices(saved);
+  } catch (error) {
+    console.error('Falha ao sincronizar faturas após troca de cartão:', error);
+  }
+  await auditSubscription(user.id, saved.id, 'PAYMENT_METHOD_UPDATED');
+
+  return {
+    invoicePaid,
+    chargeFailed,
+    message: chargeFailed
+      ? 'Cartão atualizado, mas a cobrança da mensalidade não passou. Tente outro cartão.'
+      : invoicePaid
+        ? 'Cartão atualizado e a mensalidade em aberto foi paga.'
+        : 'Cartão atualizado. As próximas cobranças usarão este cartão.',
+  };
 }
