@@ -6,7 +6,7 @@ import { AppDataSource } from '../config/data-source';
 import { Plan } from '../entities/Plan';
 import { User } from '../entities/User';
 import { applyStripeInvoice } from '../routes/subscriptions';
-import { applyOneTimePixPayment, applySetupPaymentMethod, upsertLocalSubscription } from '../services/stripe-billing';
+import { applySetupPaymentMethod, fulfillPaidPixCheckout, PIX_MONTH_PURPOSE, upsertLocalSubscription } from '../services/stripe-billing';
 
 export const webhooksRouter = Router();
 
@@ -26,13 +26,13 @@ export async function stripeWebhookHandler(req: Request, res: Response) {
   }
 
   try {
-    if (event.type === 'checkout.session.completed') {
+    if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
       const session = event.data.object as Stripe.Checkout.Session;
       if (session.mode === 'setup') {
         await applySetupPaymentMethod(session);
       }
-      if (session.mode === 'payment') {
-        await applyOneTimePixPayment(session);
+      if (session.mode === 'payment' && session.id) {
+        await fulfillPaidPixCheckout(session.id);
       }
       if (session.mode === 'subscription' && session.subscription && session.metadata?.userId && session.metadata?.planId) {
         const user = await AppDataSource.getRepository(User).findOne({ where: { id: session.metadata.userId } });
@@ -56,6 +56,15 @@ export async function stripeWebhookHandler(req: Request, res: Response) {
         if (user && plan) {
           await upsertLocalSubscription({ user, plan, stripeSubscription });
         }
+      }
+    }
+
+    if (event.type === 'payment_intent.succeeded') {
+      const intent = event.data.object as Stripe.PaymentIntent;
+      if (intent.metadata?.purpose === PIX_MONTH_PURPOSE) {
+        const found = await stripe.checkout.sessions.list({ payment_intent: intent.id, limit: 1 });
+        const sessionId = found.data[0]?.id;
+        if (sessionId) await fulfillPaidPixCheckout(sessionId);
       }
     }
 

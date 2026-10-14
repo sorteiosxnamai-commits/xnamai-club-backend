@@ -38,6 +38,18 @@ function addCalendarMonth(from: Date) {
 
 export const PIX_MONTH_PURPOSE = 'pix_month';
 
+export function pixCheckoutIsPaid(session: {
+  mode?: string | null;
+  status?: string | null;
+  payment_status?: string | null;
+  metadata?: { purpose?: string | null } | null;
+}) {
+  return session.mode === 'payment'
+    && session.metadata?.purpose === PIX_MONTH_PURPOSE
+    && session.status === 'complete'
+    && session.payment_status === 'paid';
+}
+
 export function pixMonthWindow(
   paidAt: Date,
   current: { status?: string | null; currentPeriodStart?: Date | null; currentPeriodEnd?: Date | null },
@@ -401,6 +413,11 @@ export async function syncRecentStripeSubscriptionsInBackground(force = false) {
   if (!force && stripeSyncAt && now - stripeSyncAt < 60_000) return;
   stripeSyncRunning = true;
   try {
+    try {
+      await reconcilePaidPixSessions();
+    } catch (error) {
+      console.error('Falha ao reconciliar PIX pagos:', error);
+    }
     await syncRecentStripeSubscriptions();
     stripeSyncAt = Date.now();
   } catch (error) {
@@ -563,6 +580,58 @@ export async function applyOneTimePixPayment(session: Stripe.Checkout.Session) {
 
   await auditSubscription(user.id, subscription.id, 'PIX_MONTH_PAID');
   return subscription;
+}
+
+export async function fulfillPaidPixCheckout(sessionId: string) {
+  const session = await requireStripe().checkout.sessions.retrieve(sessionId);
+  if (!pixCheckoutIsPaid(session)) return null;
+  return applyOneTimePixPayment(session);
+}
+
+export async function reconcilePaidPixSessions() {
+  const client = stripe;
+  if (!client) return 0;
+  const since = Math.floor(Date.now() / 1000) - 45 * 24 * 60 * 60;
+  let startingAfter: string | undefined;
+  let applied = 0;
+
+  for (let page = 0; page < 8; page += 1) {
+    const list = await client.checkout.sessions.list({
+      limit: 100,
+      status: 'complete',
+      created: { gte: since },
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+    });
+    for (const session of list.data) {
+      if (!pixCheckoutIsPaid(session)) continue;
+      try {
+        await applyOneTimePixPayment(session);
+        applied += 1;
+      } catch (error) {
+        console.error(`Falha ao confirmar PIX ${session.id}:`, error);
+      }
+    }
+    if (!list.has_more || list.data.length === 0) break;
+    startingAfter = list.data[list.data.length - 1]?.id;
+  }
+
+  return applied;
+}
+
+export async function reconcileUserPixPayments(userId: string) {
+  const client = stripe;
+  if (!client) return;
+  const user = await AppDataSource.getRepository(User).findOneBy({ id: userId });
+  if (!user?.stripeCustomerId) return;
+  const sessions = await client.checkout.sessions.list({
+    customer: user.stripeCustomerId,
+    limit: 20,
+    status: 'complete',
+  });
+  for (const session of sessions.data) {
+    if (!pixCheckoutIsPaid(session)) continue;
+    await applyOneTimePixPayment(session);
+  }
 }
 
 export type PaymentMethodUpdateResult = {

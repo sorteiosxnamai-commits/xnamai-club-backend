@@ -10,9 +10,9 @@ import { boletoCustomerIds } from '../services/boleto-customers';
 import { audit } from '../services/audit';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache';
 import { membershipAccess } from '../services/membership-access';
-import { repairPaidThroughSubscriptions, syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
+import { reconcilePaidPixSessions, repairPaidThroughSubscriptions, syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
 
-const MEMBERS_CACHE_KEY = 'atendimento:members:v5';
+const MEMBERS_CACHE_KEY = 'atendimento:members:v6';
 const MEMBERS_CACHE_TTL = 45;
 
 export const atendimentoRouter = Router();
@@ -203,7 +203,15 @@ atendimentoRouter.get('/members', async (req, res) => {
       void syncRecentStripeSubscriptionsInBackground().then(() => cacheDel(MEMBERS_CACHE_KEY));
       return;
     }
-  } else {
+  }
+
+  try {
+    await reconcilePaidPixSessions();
+  } catch (error) {
+    console.error('Falha ao reconciliar PIX pagos:', error);
+  }
+
+  if (refresh) {
     try {
       await Promise.race([
         syncRecentStripeSubscriptions(),

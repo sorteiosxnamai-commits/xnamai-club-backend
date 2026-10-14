@@ -1,7 +1,20 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { pixMonthWindow } = require('../dist/services/stripe-billing');
+const { pixCheckoutIsPaid, pixMonthWindow } = require('../dist/services/stripe-billing');
 const { SubscriptionStatus } = require('../dist/entities/Subscription');
+
+test('pix checkout grants access only after Stripe marks the payment as paid', () => {
+  const paid = {
+    mode: 'payment',
+    status: 'complete',
+    payment_status: 'paid',
+    metadata: { purpose: 'pix_month' },
+  };
+  assert.equal(pixCheckoutIsPaid(paid), true);
+  assert.equal(pixCheckoutIsPaid({ ...paid, payment_status: 'unpaid' }), false);
+  assert.equal(pixCheckoutIsPaid({ ...paid, mode: 'subscription' }), false);
+  assert.equal(pixCheckoutIsPaid({ ...paid, metadata: {} }), false);
+});
 
 test('one-time pix expires on the entry anniversary and restarts after the due date', () => {
   const paidAt = new Date('2026-10-13T17:09:00.000Z');

@@ -5,12 +5,17 @@ import { Subscription } from '../entities/Subscription';
 import { Invoice } from '../entities/Invoice';
 import { PaymentMethod } from '../entities/PaymentMethod';
 import { membershipAccess } from '../services/membership-access';
-import { syncStripeInvoices } from '../services/stripe-billing';
+import { reconcileUserPixPayments, syncStripeInvoices } from '../services/stripe-billing';
 
 export const customerRouter = Router();
 customerRouter.use(requireAuth);
 
 customerRouter.get('/dashboard', async (req, res) => {
+  try {
+    await reconcileUserPixPayments(req.auth!.sub);
+  } catch (error) {
+    console.error('Falha ao reconciliar PIX do cliente:', error);
+  }
   const subscription = await AppDataSource.getRepository(Subscription).findOne({
     where: { user: { id: req.auth!.sub } },
     order: { createdAt: 'DESC' },
