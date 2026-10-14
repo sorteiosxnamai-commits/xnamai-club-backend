@@ -1,7 +1,11 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { pixCheckoutIsPaid, pixMonthWindow } = require('../dist/services/stripe-billing');
+const { PIX_MONTH_PRICE_CENTS, pixCheckoutIsPaid, pixMonthWindow } = require('../dist/services/stripe-billing');
 const { SubscriptionStatus } = require('../dist/entities/Subscription');
+
+test('pix month is charged at R$ 199,97', () => {
+  assert.equal(PIX_MONTH_PRICE_CENTS, 19997);
+});
 
 test('pix checkout grants access only after Stripe marks the payment as paid', () => {
   const paid = {

@@ -37,6 +37,7 @@ function addCalendarMonth(from: Date) {
 }
 
 export const PIX_MONTH_PURPOSE = 'pix_month';
+export const PIX_MONTH_PRICE_CENTS = 19997;
 
 export function pixCheckoutIsPaid(session: {
   mode?: string | null;
@@ -546,7 +547,7 @@ export async function applyOneTimePixPayment(session: Stripe.Checkout.Session) {
 
   await invoiceRepo.save(invoiceRepo.create({
     subscription,
-    amountCents: plan.monthlyPriceCents,
+    amountCents: session.amount_total && session.amount_total > 0 ? session.amount_total : PIX_MONTH_PRICE_CENTS,
     status: InvoiceStatus.PAID,
     dueDate: window.periodEnd,
     paidAt,

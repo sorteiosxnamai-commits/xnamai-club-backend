@@ -9,7 +9,7 @@ import { Plan } from '../entities/Plan';
 import { User } from '../entities/User';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
 import { PaymentMethod, PaymentMethodType } from '../entities/PaymentMethod';
-import { applyOneTimePixPayment, applySetupPaymentMethod, auditSubscription, PAYMENT_METHOD_UPDATE_PURPOSE, PIX_MONTH_PURPOSE, recordStripeInvoice, syncStripeInvoices, upsertLocalSubscription } from '../services/stripe-billing';
+import { applyOneTimePixPayment, applySetupPaymentMethod, auditSubscription, PAYMENT_METHOD_UPDATE_PURPOSE, PIX_MONTH_PRICE_CENTS, PIX_MONTH_PURPOSE, recordStripeInvoice, syncStripeInvoices, upsertLocalSubscription } from '../services/stripe-billing';
 
 export const subscriptionsRouter = Router();
 subscriptionsRouter.use(requireAuth);
@@ -122,7 +122,7 @@ subscriptionsRouter.post('/checkout', async (req, res) => {
           quantity: 1,
           price_data: {
             currency: 'brl',
-            unit_amount: plan.monthlyPriceCents,
+            unit_amount: PIX_MONTH_PRICE_CENTS,
             product_data: { name: `${plan.name} — 1 mês` },
           },
         }],
