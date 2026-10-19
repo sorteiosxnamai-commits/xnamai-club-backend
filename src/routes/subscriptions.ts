@@ -9,7 +9,7 @@ import { Plan } from '../entities/Plan';
 import { User } from '../entities/User';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
 import { PaymentMethod, PaymentMethodType } from '../entities/PaymentMethod';
-import { applyOneTimePixPayment, applySetupPaymentMethod, auditSubscription, PAYMENT_METHOD_UPDATE_PURPOSE, PIX_MONTH_PRICE_CENTS, PIX_MONTH_PURPOSE, recordStripeInvoice, syncStripeInvoices, upsertLocalSubscription } from '../services/stripe-billing';
+import { applyOneTimePixPayment, applySetupPaymentMethod, auditSubscription, enforceSingleActiveStripeSubscription, expireOpenSubscriptionCheckouts, findBlockingStripeSubscription, PAYMENT_METHOD_UPDATE_PURPOSE, PIX_MONTH_PRICE_CENTS, PIX_MONTH_PURPOSE, recordStripeInvoice, syncStripeInvoices, upsertLocalSubscription } from '../services/stripe-billing';
 
 export const subscriptionsRouter = Router();
 subscriptionsRouter.use(requireAuth);
@@ -105,6 +105,18 @@ subscriptionsRouter.post('/checkout', async (req, res) => {
     }
 
     const customerId = await getOrCreateStripeCustomer(user);
+    if (paymentMethodType !== 'PIX_RECURRING') {
+      const blocking = await findBlockingStripeSubscription(customerId);
+      if (blocking) {
+        try {
+          await upsertLocalSubscription({ user, plan, stripeSubscription: blocking });
+        } catch (error) {
+          console.error(`Falha ao sincronizar assinatura Stripe existente ${blocking.id}:`, error);
+        }
+        return res.status(409).json({ message: 'O usuário já possui uma assinatura ativa.' });
+      }
+      await expireOpenSubscriptionCheckouts(customerId);
+    }
 
     if (paymentMethodType === 'PIX_RECURRING') {
       if (plan.monthlyPriceCents == null) {
@@ -222,7 +234,8 @@ subscriptionsRouter.get('/confirm', async (req, res) => {
   if (!planId) return res.status(400).json({ message: 'Sessão sem plano.' });
   const user = await AppDataSource.getRepository(User).findOneByOrFail({ id: req.auth!.sub });
   const plan = await AppDataSource.getRepository(Plan).findOneByOrFail({ id: planId });
-  const stripeSubscription = session.subscription as Stripe.Subscription;
+  const confirmed = session.subscription as Stripe.Subscription;
+  const stripeSubscription = await enforceSingleActiveStripeSubscription(confirmed);
   const pm = stripeSubscription.default_payment_method;
   const card = typeof pm === 'object' && pm && 'card' in pm ? pm.card : undefined;
   const requestedType = session.metadata?.paymentMethodType === 'PIX_RECURRING'

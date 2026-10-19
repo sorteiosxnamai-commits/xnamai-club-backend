@@ -39,6 +39,99 @@ function addCalendarMonth(from: Date) {
 export const PIX_MONTH_PURPOSE = 'pix_month';
 export const PIX_MONTH_PRICE_CENTS = 19997;
 
+export function subscriptionToKeep<T extends { id: string; created: number }>(subscriptions: T[]) {
+  if (subscriptions.length === 0) return null;
+  return [...subscriptions].sort((a, b) => a.created - b.created || a.id.localeCompare(b.id))[0] ?? null;
+}
+
+export async function findBlockingStripeSubscription(customerId: string) {
+  const client = stripe || requireStripe();
+  for (const status of ['active', 'trialing', 'past_due', 'unpaid'] as const) {
+    const page = await client.subscriptions.list({ customer: customerId, status, limit: 5 });
+    const found = page.data[0];
+    if (found) return found;
+  }
+  return null;
+}
+
+export async function expireOpenSubscriptionCheckouts(customerId: string) {
+  const client = stripe || requireStripe();
+  const open = await client.checkout.sessions.list({
+    customer: customerId,
+    status: 'open',
+    limit: 20,
+  });
+  for (const session of open.data) {
+    if (session.mode !== 'subscription' || !session.id) continue;
+    try {
+      await client.checkout.sessions.expire(session.id);
+    } catch (error) {
+      console.error(`Falha ao expirar checkout Stripe ${session.id}:`, error);
+    }
+  }
+}
+
+async function refundLatestInvoice(subscription: Stripe.Subscription) {
+  const client = stripe || requireStripe();
+  const invoiceId = typeof subscription.latest_invoice === 'string'
+    ? subscription.latest_invoice
+    : subscription.latest_invoice?.id;
+  if (!invoiceId) return;
+  const invoice = await client.invoices.retrieve(invoiceId) as Stripe.Invoice & {
+    payment_intent?: string | Stripe.PaymentIntent | null;
+    charge?: string | Stripe.Charge | null;
+  };
+  if (invoice.status !== 'paid') return;
+  const paymentIntentId = typeof invoice.payment_intent === 'string'
+    ? invoice.payment_intent
+    : invoice.payment_intent?.id;
+  if (paymentIntentId) {
+    await client.refunds.create({ payment_intent: paymentIntentId });
+    return;
+  }
+  const chargeId = typeof invoice.charge === 'string' ? invoice.charge : invoice.charge?.id;
+  if (chargeId) await client.refunds.create({ charge: chargeId });
+}
+
+export async function enforceSingleActiveStripeSubscription(stripeSubscription: Stripe.Subscription) {
+  const client = stripe || requireStripe();
+  const customerId = typeof stripeSubscription.customer === 'string'
+    ? stripeSubscription.customer
+    : stripeSubscription.customer?.id;
+  if (!customerId) return stripeSubscription;
+
+  const active = await client.subscriptions.list({
+    customer: customerId,
+    status: 'active',
+    limit: 20,
+    expand: ['data.default_payment_method', 'data.latest_invoice'],
+  });
+  const keep = subscriptionToKeep(active.data);
+  if (!keep || active.data.length <= 1) {
+    return active.data.find((item) => item.id === stripeSubscription.id) || stripeSubscription;
+  }
+
+  for (const duplicate of active.data) {
+    if (duplicate.id === keep.id) continue;
+    try {
+      await refundLatestInvoice(duplicate);
+    } catch (error) {
+      console.error(`Falha ao estornar assinatura duplicada ${duplicate.id}:`, error);
+    }
+    try {
+      await client.subscriptions.cancel(duplicate.id);
+      console.warn(`Assinatura Stripe duplicada cancelada: ${duplicate.id} (mantida ${keep.id})`);
+    } catch (error) {
+      console.error(`Falha ao cancelar assinatura duplicada ${duplicate.id}:`, error);
+    }
+  }
+
+  if (keep.id === stripeSubscription.id) return stripeSubscription;
+  return client.subscriptions.retrieve(keep.id, {
+    expand: ['default_payment_method', 'latest_invoice'],
+  });
+}
+
 export function pixCheckoutIsPaid(session: {
   mode?: string | null;
   status?: string | null;
@@ -339,27 +432,39 @@ export async function syncRecentStripeSubscriptions(limit = 40) {
   const userRepo = AppDataSource.getRepository(User);
   const planRepo = AppDataSource.getRepository(Plan);
   const launchPlan = await planRepo.findOne({ where: { code: 'LAUNCH' } });
+  const dedupedCustomers = new Set<string>();
 
   async function upsert(stripeSubscription: Stripe.Subscription) {
     const customerId = typeof stripeSubscription.customer === 'string'
       ? stripeSubscription.customer
       : stripeSubscription.customer?.id;
-    const user = stripeSubscription.metadata?.userId
-      ? await userRepo.findOne({ where: { id: stripeSubscription.metadata.userId } })
+    let kept = stripeSubscription;
+    if (customerId && !dedupedCustomers.has(customerId)) {
+      dedupedCustomers.add(customerId);
+      kept = await enforceSingleActiveStripeSubscription(stripeSubscription);
+    } else if (customerId && stripeSubscription.status === 'active') {
+      const stillActive = await requireStripe().subscriptions.retrieve(stripeSubscription.id, {
+        expand: ['default_payment_method', 'latest_invoice'],
+      });
+      if (stillActive.status !== 'active') return;
+      kept = stillActive;
+    }
+    const user = kept.metadata?.userId
+      ? await userRepo.findOne({ where: { id: kept.metadata.userId } })
       : customerId
         ? await userRepo.findOne({ where: { stripeCustomerId: customerId } })
         : null;
     if (!user) return;
 
-    const priceId = stripeSubscription.items.data[0]?.price?.id;
-    const plan = (stripeSubscription.metadata?.planId
-      ? await planRepo.findOne({ where: { id: stripeSubscription.metadata.planId } })
+    const priceId = kept.items.data[0]?.price?.id;
+    const plan = (kept.metadata?.planId
+      ? await planRepo.findOne({ where: { id: kept.metadata.planId } })
       : null)
       ?? (priceId ? await planRepo.findOne({ where: { stripePriceId: priceId } }) : null)
       ?? launchPlan;
     if (!plan) return;
 
-    await upsertLocalSubscription({ user, plan, stripeSubscription });
+    await upsertLocalSubscription({ user, plan, stripeSubscription: kept });
   }
 
   const collected: Stripe.Subscription[] = [];

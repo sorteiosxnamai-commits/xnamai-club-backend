@@ -1,10 +1,20 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { PIX_MONTH_PRICE_CENTS, pixCheckoutIsPaid, pixMonthWindow } = require('../dist/services/stripe-billing');
+const { PIX_MONTH_PRICE_CENTS, pixCheckoutIsPaid, pixMonthWindow, subscriptionToKeep } = require('../dist/services/stripe-billing');
 const { SubscriptionStatus } = require('../dist/entities/Subscription');
 
 test('pix month is charged at R$ 199,97', () => {
   assert.equal(PIX_MONTH_PRICE_CENTS, 19997);
+});
+
+test('keeps the oldest stripe subscription when duplicates exist', () => {
+  const keep = subscriptionToKeep([
+    { id: 'sub_new', created: 200 },
+    { id: 'sub_old', created: 100 },
+    { id: 'sub_mid', created: 150 },
+  ]);
+  assert.equal(keep?.id, 'sub_old');
+  assert.equal(subscriptionToKeep([]), null);
 });
 
 test('pix checkout grants access only after Stripe marks the payment as paid', () => {

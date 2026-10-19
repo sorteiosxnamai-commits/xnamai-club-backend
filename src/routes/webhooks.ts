@@ -6,7 +6,7 @@ import { AppDataSource } from '../config/data-source';
 import { Plan } from '../entities/Plan';
 import { User } from '../entities/User';
 import { applyStripeInvoice } from '../routes/subscriptions';
-import { applySetupPaymentMethod, fulfillPaidPixCheckout, PIX_MONTH_PURPOSE, upsertLocalSubscription } from '../services/stripe-billing';
+import { applySetupPaymentMethod, enforceSingleActiveStripeSubscription, fulfillPaidPixCheckout, PIX_MONTH_PURPOSE, upsertLocalSubscription } from '../services/stripe-billing';
 
 export const webhooksRouter = Router();
 
@@ -38,9 +38,10 @@ export async function stripeWebhookHandler(req: Request, res: Response) {
         const user = await AppDataSource.getRepository(User).findOne({ where: { id: session.metadata.userId } });
         const plan = await AppDataSource.getRepository(Plan).findOne({ where: { id: session.metadata.planId } });
         if (user && plan) {
-          const stripeSubscription = await stripe.subscriptions.retrieve(String(session.subscription), {
+          const created = await stripe.subscriptions.retrieve(String(session.subscription), {
             expand: ['default_payment_method', 'latest_invoice'],
           });
+          const stripeSubscription = await enforceSingleActiveStripeSubscription(created);
           await upsertLocalSubscription({ user, plan, stripeSubscription });
         }
       }
