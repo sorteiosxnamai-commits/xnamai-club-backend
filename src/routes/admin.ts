@@ -7,6 +7,7 @@ import { User, UserRole } from '../entities/User';
 import { Plan } from '../entities/Plan';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
 import { Invoice, InvoiceStatus } from '../entities/Invoice';
+import { pickPrimarySubscription } from '../services/membership-access';
 import { syncAllStripeInvoices } from '../services/stripe-billing';
 import { buildRevenueForecast } from '../services/revenue-forecast';
 import { fetchFrontendVercelLogs } from '../services/vercel-logs';
@@ -168,9 +169,7 @@ adminRouter.get('/customers', async (_req, res) => {
     relations: ['subscriptions', 'subscriptions.plan'],
   });
   res.json(users.map((user) => {
-    const latest = [...(user.subscriptions ?? [])].sort(
-      (a, b) => +new Date(b.createdAt) - +new Date(a.createdAt),
-    )[0];
+    const latest = pickPrimarySubscription(user.subscriptions ?? []);
     return {
       ...customerSummary(user),
       createdAt: user.createdAt,

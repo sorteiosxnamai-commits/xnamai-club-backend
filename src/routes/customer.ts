@@ -1,10 +1,11 @@
 import { Router } from 'express';
+import { In } from 'typeorm';
 import { AppDataSource } from '../config/data-source';
 import { requireAuth } from '../middleware/auth';
 import { Subscription } from '../entities/Subscription';
 import { Invoice } from '../entities/Invoice';
 import { PaymentMethod } from '../entities/PaymentMethod';
-import { membershipAccess } from '../services/membership-access';
+import { membershipAccess, pickPrimarySubscription } from '../services/membership-access';
 import { reconcileUserPixPayments, syncStripeInvoices } from '../services/stripe-billing';
 
 export const customerRouter = Router();
@@ -16,28 +17,42 @@ customerRouter.get('/dashboard', async (req, res) => {
   } catch (error) {
     console.error('Falha ao reconciliar PIX do cliente:', error);
   }
-  const subscription = await AppDataSource.getRepository(Subscription).findOne({
+  const subscriptions = await AppDataSource.getRepository(Subscription).find({
     where: { user: { id: req.auth!.sub } },
-    order: { createdAt: 'DESC' },
+    order: { createdAt: 'ASC' },
   });
   const paymentMethod = await AppDataSource.getRepository(PaymentMethod).findOne({
     where: { user: { id: req.auth!.sub }, active: true },
     order: { createdAt: 'DESC' },
   });
-  if (subscription?.gatewaySubscriptionId) {
+  for (const row of subscriptions) {
+    if (!row.gatewaySubscriptionId) continue;
     try {
-      await syncStripeInvoices(subscription);
+      await syncStripeInvoices(row);
     } catch (error) {
       console.error('Falha ao sincronizar faturas Stripe:', error);
     }
   }
-  const invoices = subscription
+
+  const subscriptionIds = subscriptions.map((row) => row.id);
+  const paidAndOpen = subscriptionIds.length
     ? await AppDataSource.getRepository(Invoice).find({
-      where: { subscription: { id: subscription.id } },
+      where: { subscription: { id: In(subscriptionIds) } },
       order: { createdAt: 'DESC' },
-      take: 10,
     })
     : [];
+  const invoicesBySubscription = new Map(subscriptions.map((row) => [row.id, [] as Invoice[]]));
+  for (const invoice of paidAndOpen) {
+    const bucket = invoice.subscription?.id ? invoicesBySubscription.get(invoice.subscription.id) : undefined;
+    if (bucket) bucket.push(invoice);
+  }
+  for (const row of subscriptions) {
+    row.invoices = invoicesBySubscription.get(row.id) ?? [];
+  }
+
+  const subscription = pickPrimarySubscription(subscriptions) ?? null;
+  const invoices = (subscription?.invoices ?? []).slice(0, 10);
+  if (subscription) delete (subscription as { invoices?: Invoice[] }).invoices;
 
   res.json({
     subscription,

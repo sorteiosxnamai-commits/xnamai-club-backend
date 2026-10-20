@@ -34,6 +34,26 @@ function openPeriodEnd(start: Date | null, end: Date | null) {
   return end;
 }
 
+export type SubscriptionForAccess = Pick<
+  Subscription,
+  'status' | 'currentPeriodStart' | 'currentPeriodEnd' | 'createdAt'
+> & {
+  invoices?: Array<Pick<Invoice, 'status' | 'paidAt' | 'createdAt'>>;
+};
+
+function liveliness(status: SubscriptionStatus) {
+  if (
+    status === SubscriptionStatus.ACTIVE
+    || status === SubscriptionStatus.PAST_DUE
+    || status === SubscriptionStatus.PAYMENT_FAILED
+    || status === SubscriptionStatus.SUSPENDED
+  ) {
+    return 2;
+  }
+  if (status === SubscriptionStatus.PENDING) return 1;
+  return 0;
+}
+
 export function membershipAccess(
   subscription: Pick<Subscription, 'status' | 'currentPeriodStart' | 'currentPeriodEnd'> | null | undefined,
   invoices: Array<Pick<Invoice, 'status' | 'paidAt' | 'createdAt'>> = [],
@@ -63,4 +83,25 @@ export function membershipAccess(
     : subscription.status === SubscriptionStatus.ACTIVE;
 
   return { active, validUntil, renewed, renewedAt };
+}
+
+export function pickPrimarySubscription<T extends SubscriptionForAccess>(
+  subscriptions: T[] | null | undefined,
+): T | undefined {
+  if (!subscriptions?.length) return undefined;
+
+  return [...subscriptions].sort((a, b) => {
+    const accessA = membershipAccess(a, a.invoices ?? []);
+    const accessB = membershipAccess(b, b.invoices ?? []);
+    if (accessA.active !== accessB.active) return Number(accessB.active) - Number(accessA.active);
+
+    const live = liveliness(b.status) - liveliness(a.status);
+    if (live) return live;
+
+    const untilA = accessA.validUntil?.getTime() ?? 0;
+    const untilB = accessB.validUntil?.getTime() ?? 0;
+    if (untilA !== untilB) return untilB - untilA;
+
+    return +new Date(a.createdAt) - +new Date(b.createdAt);
+  })[0];
 }

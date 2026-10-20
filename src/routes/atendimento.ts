@@ -9,10 +9,10 @@ import { PaymentMethod, PaymentMethodType } from '../entities/PaymentMethod';
 import { boletoCustomerIds } from '../services/boleto-customers';
 import { audit } from '../services/audit';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache';
-import { membershipAccess } from '../services/membership-access';
+import { membershipAccess, pickPrimarySubscription } from '../services/membership-access';
 import { reconcilePaidPixSessions, repairPaidThroughSubscriptions, syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
 
-const MEMBERS_CACHE_KEY = 'atendimento:members:v6';
+const MEMBERS_CACHE_KEY = 'atendimento:members:v7';
 const MEMBERS_CACHE_TTL = 45;
 
 export const atendimentoRouter = Router();
@@ -42,9 +42,7 @@ function launchSubscription(user: User) {
 }
 
 function latestSubscription(user: User) {
-  return [...(user.subscriptions ?? [])].sort(
-    (a, b) => +new Date(b.createdAt) - +new Date(a.createdAt),
-  )[0];
+  return pickPrimarySubscription(user.subscriptions ?? []);
 }
 
 async function findByIds<T>(ids: string[], load: (chunk: string[]) => Promise<T[]>) {
