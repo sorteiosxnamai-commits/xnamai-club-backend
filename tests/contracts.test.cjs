@@ -148,6 +148,34 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     const boletoCard = await request('/api/subscriptions/payment-method', { method: 'POST', body: '{}' });
     assert.equal(boletoCard.status, 409);
     assert.match(boletoCard.body.message, /boleto/i);
+    // A canceled Stripe subscription must reconcile locally without another update.
+    const stripeConfig = require('../dist/config/stripe');
+    const originalRequireStripe = stripeConfig.requireStripe;
+    const subscriptionRepo = AppDataSource.getRepository(Subscription);
+    const boletoSubscription = await subscriptionRepo.findOneByOrFail({ user: { id: user.id } });
+    boletoSubscription.gatewaySubscriptionId = 'sub_canceled_boleto';
+    await subscriptionRepo.save(boletoSubscription);
+    stripeConfig.requireStripe = () => ({ subscriptions: {
+      retrieve: async () => ({ id: 'sub_canceled_boleto', status: 'canceled' }),
+      update: async () => { throw new Error('Canceled subscriptions cannot be updated'); },
+    } });
+    try {
+      const cancelUrl = `/api/subscriptions/${boletoSubscription.id}/cancel`;
+      const canceled = await request(cancelUrl, { method: 'POST', body: '{}' });
+      assert.equal(canceled.status, 200);
+      assert.equal(canceled.body.status, 'CANCELLED');
+      assert.equal((await request(cancelUrl, { method: 'POST', body: '{}' })).status, 200);
+      boletoSubscription.status = SubscriptionStatus.ACTIVE;
+      boletoSubscription.cancelledAt = null;
+      await subscriptionRepo.save(boletoSubscription);
+      assert.equal((await request('/api/me/dashboard')).body.subscription.status, 'CANCELLED');
+    } finally {
+      stripeConfig.requireStripe = originalRequireStripe;
+      boletoSubscription.status = SubscriptionStatus.ACTIVE;
+      boletoSubscription.cancelledAt = null;
+      boletoSubscription.gatewaySubscriptionId = null;
+      await subscriptionRepo.save(boletoSubscription);
+    }
     assert.equal((await request('/api/subscriptions/upgrade', { method: 'POST',
       body: JSON.stringify({ planId: priorityPlan.id }) })).status, 400); // Price Stripe ainda ausente no teste.
     // --- atendimento publico, sem login ---

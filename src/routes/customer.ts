@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { In } from 'typeorm';
 import { AppDataSource } from '../config/data-source';
+import { requireStripe } from '../config/stripe';
 import { requireAuth } from '../middleware/auth';
-import { Subscription } from '../entities/Subscription';
+import { Subscription, SubscriptionStatus } from '../entities/Subscription';
 import { Invoice } from '../entities/Invoice';
 import { PaymentMethod } from '../entities/PaymentMethod';
 import { membershipAccess, pickPrimarySubscription } from '../services/membership-access';
@@ -27,6 +28,16 @@ customerRouter.get('/dashboard', async (req, res) => {
   });
   for (const row of subscriptions) {
     if (!row.gatewaySubscriptionId) continue;
+    try {
+      const current = await requireStripe().subscriptions.retrieve(row.gatewaySubscriptionId);
+      if (current.status === 'canceled' || current.status === 'incomplete_expired') {
+        row.status = SubscriptionStatus.CANCELLED;
+        row.cancelledAt = row.cancelledAt ?? (current.canceled_at ? new Date(current.canceled_at * 1000) : new Date());
+        await AppDataSource.getRepository(Subscription).save(row);
+      }
+    } catch (error) {
+      console.error('Falha ao sincronizar cancelamento Stripe:', error);
+    }
     try {
       await syncStripeInvoices(row);
     } catch (error) {

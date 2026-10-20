@@ -484,7 +484,7 @@ subscriptionsRouter.post('/:id/cancel', async (req, res) => {
     if (!subscription) return res.status(404).json({ message: 'Assinatura não encontrada.' });
 
     if (subscription.status === SubscriptionStatus.CANCELLED) {
-      return res.status(409).json({ message: 'Esta assinatura já está cancelada.' });
+      return res.json(subscriptionPublicView(subscription));
     }
     if (subscription.cancelledAt) {
       return res.status(409).json({ message: 'O cancelamento já foi solicitado. O acesso permanece até o fim do período pago.' });
@@ -493,7 +493,12 @@ subscriptionsRouter.post('/:id/cancel', async (req, res) => {
     if (subscription.gatewaySubscriptionId) {
       try {
         const stripe = requireStripe();
-        await stripe.subscriptions.update(subscription.gatewaySubscriptionId, { cancel_at_period_end: true });
+        const current = await stripe.subscriptions.retrieve(subscription.gatewaySubscriptionId);
+        if (current.status === 'canceled' || current.status === 'incomplete_expired') {
+          subscription.status = SubscriptionStatus.CANCELLED;
+        } else {
+          await stripe.subscriptions.update(subscription.gatewaySubscriptionId, { cancel_at_period_end: true });
+        }
       } catch (error) {
         if (!isIgnorableStripeCancelError(error)) throw error;
         console.warn('Stripe já havia encerrado a assinatura; seguindo com cancelamento local.', error);
