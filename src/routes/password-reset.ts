@@ -7,13 +7,13 @@ import { env } from '../config/env';
 import { User, UserRole } from '../entities/User';
 import { RecoveryRateLimit } from '../entities/RecoveryRateLimit';
 import { audit } from '../services/audit';
-import { GmailDeliveryUncertainError, recoveryMailConfigured, sendRecoveryEmail } from '../services/recovery-mail';
+import { MailDeliveryUncertainError, recoveryMailConfigured, sendRecoveryEmail } from '../services/recovery-mail';
 
 export const FORGOT_MESSAGE = 'Se o e-mail estiver cadastrado, você receberá um link para redefinir sua senha.';
 const INVALID_TOKEN_MESSAGE = 'Link inválido ou expirado. Solicite outro link de recuperação.';
 const WINDOW_MS = 60 * 60 * 1000;
 const MIN_RESPONSE_MS = 8_500;
-type MailSender = (to: string, link: string) => Promise<void>;
+type MailSender = (to: string, link: string) => Promise<string | null | void>;
 
 function sha256(value: string) {
   return createHash('sha256').update(value).digest('hex');
@@ -78,18 +78,20 @@ export function createPasswordResetRouter(sendMail: MailSender = sendRecoveryEma
       }).where('id = :id AND role = :role', { id: user.id, role: UserRole.CUSTOMER }).execute();
       let accepted = false;
       let uncertain = false;
+      let providerMessageId: string | null = null;
       try {
-        await sendMail(user.email, recoveryLink(token));
+        providerMessageId = await sendMail(user.email, recoveryLink(token)) || null;
         accepted = true;
       } catch (error) {
-        uncertain = error instanceof GmailDeliveryUncertainError;
+        uncertain = error instanceof MailDeliveryUncertainError;
         console.error(uncertain
-          ? 'Recuperação de senha: confirmação do Gmail indisponível.'
-          : 'Recuperação de senha: provedor de e-mail falhou.');
+          ? 'Recuperação de senha: confirmação da Brevo indisponível.'
+          : `Recuperação de senha: Brevo falhou (${error instanceof Error ? error.message : 'erro desconhecido'}).`);
       }
       if (accepted) {
         try {
-          await audit({ actorUserId: user.id, action: 'CUSTOMER_PASSWORD_RESET_EMAIL_ACCEPTED', entity: 'User', entityId: user.id });
+          await audit({ actorUserId: user.id, action: 'CUSTOMER_PASSWORD_RESET_EMAIL_ACCEPTED', entity: 'User', entityId: user.id,
+            metadata: providerMessageId ? { provider: 'brevo', messageId: providerMessageId } : { provider: 'brevo' } });
         } catch {
           console.error('Recuperação de senha: falha ao registrar aceite de e-mail.');
         }

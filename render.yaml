@@ -41,13 +41,9 @@ services:
         value: 8h
       - key: FRONTEND_URL
         sync: false
-      - key: GMAIL_SENDER
+      - key: BREVO_API_KEY
         sync: false
-      - key: GOOGLE_CLIENT_ID
-        sync: false
-      - key: GOOGLE_CLIENT_SECRET
-        sync: false
-      - key: GOOGLE_REFRESH_TOKEN
+      - key: BREVO_SENDER_EMAIL
         sync: false
       - key: ADMIN_EMAIL
         sync: false

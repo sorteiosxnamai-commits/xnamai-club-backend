@@ -12,10 +12,8 @@ process.env.TYPEORM_SYNCHRONIZE = 'true';
 process.env.JWT_SECRET = 'local-contract-test-secret';
 process.env.STRIPE_SECRET_KEY = '';
 process.env.REDIS_URL = '';
-process.env.GMAIL_SENDER = '';
-process.env.GOOGLE_CLIENT_ID = '';
-process.env.GOOGLE_CLIENT_SECRET = '';
-process.env.GOOGLE_REFRESH_TOKEN = '';
+process.env.BREVO_API_KEY = '';
+process.env.BREVO_SENDER_EMAIL = '';
 
 const { AppDataSource } = require('../dist/config/data-source');
 const { Plan } = require('../dist/entities/Plan');
@@ -239,7 +237,7 @@ test('customer recovery keeps account responses uniform and consumes tokens once
   const { createPasswordResetRouter } = require('../dist/routes/password-reset');
   const { signAccessToken } = require('../dist/middleware/auth');
   const sent = [];
-  const app = express().use(express.json()).use('/api/auth', createPasswordResetRouter(async (to, link) => { sent.push({ to, link }); }), authRouter);
+  const app = express().use(express.json()).use('/api/auth', createPasswordResetRouter(async (to, link) => { sent.push({ to, link }); return '<accepted@brevo.com>'; }), authRouter);
   const server = await new Promise(resolve => { const listener = app.listen(0, '127.0.0.1', () => resolve(listener)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const post = async (path, body) => {
@@ -258,6 +256,10 @@ test('customer recovery keeps account responses uniform and consumes tokens once
     assert.deepEqual(exists, missing);
     assert.deepEqual(staff, missing);
     assert.equal(sent.length, 1);
+    const acceptedAudit = await db.getRepository(require('../dist/entities/AuditLog').AuditLog).findOneByOrFail({
+      action: 'CUSTOMER_PASSWORD_RESET_EMAIL_ACCEPTED', actorUserId: user.id,
+    });
+    assert.deepEqual(JSON.parse(acceptedAudit.metadataJson), { provider: 'brevo', messageId: '<accepted@brevo.com>' });
     const first = new URL(sent[0].link).searchParams.get('token');
     assert.equal(first.length, 64);
     const stored = await repo.createQueryBuilder('user').addSelect('user.passwordResetTokenHash').where('user.id = :id', { id: user.id }).getOneOrFail();
@@ -300,9 +302,9 @@ test('customer recovery keeps account responses uniform and consumes tokens once
       assert.equal(row.passwordResetTokenHash, null);
     } finally { await new Promise(resolve => failedMailServer.close(resolve)); }
 
-    const { GmailDeliveryUncertainError } = require('../dist/services/recovery-mail');
+    const { MailDeliveryUncertainError } = require('../dist/services/recovery-mail');
     const uncertainUser = await repo.save(repo.create({ email: 'uncertain-mail@example.invalid', name: 'Uncertain Mail', passwordHash: await bcrypt.hash('oldpassword', 12), role: UserRole.CUSTOMER }));
-    const uncertainApp = express().use(express.json()).use('/api/auth', createPasswordResetRouter(async () => { throw new GmailDeliveryUncertainError(); }));
+    const uncertainApp = express().use(express.json()).use('/api/auth', createPasswordResetRouter(async () => { throw new MailDeliveryUncertainError(); }));
     const uncertainServer = await new Promise(resolve => { const listener = uncertainApp.listen(0, '127.0.0.1', () => resolve(listener)); });
     try {
       const response = await fetch(`http://127.0.0.1:${uncertainServer.address().port}/api/auth/forgot-password`, {

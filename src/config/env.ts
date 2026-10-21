@@ -20,8 +20,6 @@ export const env = {
   },
   publicApiUrl: (process.env.PUBLIC_API_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, ''),
   redisUrl: (process.env.REDIS_URL || '').trim(),
-  gmailSender: (process.env.GMAIL_SENDER || '').trim(),
-  googleClientId: (process.env.GOOGLE_CLIENT_ID || '').trim(),
-  googleClientSecret: (process.env.GOOGLE_CLIENT_SECRET || '').trim(),
-  googleRefreshToken: (process.env.GOOGLE_REFRESH_TOKEN || '').trim(),
+  brevoApiKey: (process.env.BREVO_API_KEY || '').trim(),
+  brevoSenderEmail: (process.env.BREVO_SENDER_EMAIL || '').trim(),
 };
