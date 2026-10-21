@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const config = { brevoApiKey: 'key-test', brevoSenderEmail: 'contato@clubxnamai.com.br' };
 
-test('Brevo sends recovery to the requested recipient and returns its message id', async () => {
+test('Brevo sends a plain text recovery URL without a trackable HTML link', async () => {
   const { sendRecoveryEmail } = require('../dist/services/recovery-mail');
   const calls = [];
   const fetcher = async (url, options) => {
@@ -22,7 +22,8 @@ test('Brevo sends recovery to the requested recipient and returns its message id
   assert.deepEqual(body.to, [{ email: 'cliente@example.com' }]);
   assert.match(body.subject, /Redefinição de senha/);
   assert.match(body.textContent, /redefinir-senha\?token=abc/);
-  assert.match(body.htmlContent, /redefinir-senha\?token=abc/);
+  assert.equal(body.htmlContent, undefined);
+  assert.equal((body.textContent.match(/https:\/\//g) || []).length, 1);
   assert.doesNotMatch(calls[0].options.body, /key-test/);
 });
 

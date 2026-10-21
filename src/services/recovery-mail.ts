@@ -24,7 +24,6 @@ export async function sendRecoveryEmail(
   fetcher: typeof fetch = fetch,
   config: BrevoConfig = env,
 ): Promise<string | null> {
-  const safeLink = link.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   let response: Response;
   try {
     response = await fetcher('https://api.brevo.com/v3/smtp/email', {
@@ -34,8 +33,7 @@ export async function sendRecoveryEmail(
         sender: { email: config.brevoSenderEmail, name: 'xNaMai Club' },
         to: [{ email: to }],
         subject: 'xNaMai Club — Redefinição de senha',
-        textContent: `Recebemos um pedido para redefinir sua senha. Abra este link em até 30 minutos: ${link}\nSe você não solicitou, ignore este e-mail.`,
-        htmlContent: `<p>Recebemos um pedido para redefinir sua senha. Este link vale por 30 minutos.</p><p><a href="${safeLink}">Redefinir minha senha</a></p><p>Se você não solicitou, ignore este e-mail.</p>`,
+        textContent: `Recebemos um pedido para redefinir sua senha. Abra ou copie e cole este endereço no navegador em até 30 minutos:\n${link}\n\nSe você não solicitou, ignore este e-mail.`,
       }),
       signal: AbortSignal.timeout(4_000),
     });
