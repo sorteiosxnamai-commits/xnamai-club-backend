@@ -17,6 +17,7 @@ export const env = {
     publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
     restrictedKey: process.env.STRIPE_RESTRICTED_KEY || '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+    testWebhookSecret: process.env.STRIPE_TEST_WEBHOOK_SECRET || '',
   },
   publicApiUrl: (process.env.PUBLIC_API_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, ''),
   redisUrl: (process.env.REDIS_URL || '').trim(),

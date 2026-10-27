@@ -11,19 +11,37 @@ import { applySetupPaymentMethod, enforceSingleActiveStripeSubscription, fulfill
 export const webhooksRouter = Router();
 
 export async function stripeWebhookHandler(req: Request, res: Response) {
-  const stripe = requireStripe();
+  let stripe;
+  try {
+    stripe = requireStripe();
+  } catch {
+    return res.status(503).json({ message: 'Stripe indisponível.' });
+  }
   const signature = req.headers['stripe-signature'];
-  if (!env.stripe.webhookSecret || typeof signature !== 'string') {
+  const secrets = [env.stripe.webhookSecret, env.stripe.testWebhookSecret].filter(Boolean);
+  if (!secrets.length || typeof signature !== 'string') {
     return res.status(400).json({ message: 'Webhook Stripe sem assinatura.' });
   }
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(req.body, signature, env.stripe.webhookSecret);
+    let verified: Stripe.Event | undefined;
+    for (const secret of secrets) {
+      try {
+        verified = stripe.webhooks.constructEvent(req.body, signature, secret);
+        break;
+      } catch { /* Try the other configured endpoint secret. */ }
+    }
+    if (!verified) throw new Error('Nenhum segredo configurado validou a assinatura.');
+    event = verified;
   } catch (error) {
     console.error('Stripe webhook inválido:', error);
     return res.status(400).json({ message: 'Assinatura do webhook inválida.' });
   }
+
+  // A test endpoint can target production, but must never change real memberships.
+  const liveMode = /^(sk|rk)_live_/.test(env.stripe.secretKey);
+  if (event.livemode !== liveMode) return res.json({ received: true, ignored: 'mode_mismatch' });
 
   try {
     if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
@@ -47,7 +65,7 @@ export async function stripeWebhookHandler(req: Request, res: Response) {
       }
     }
 
-    if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
+    if (event.type === 'customer.subscription.created' || event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
       const stripeSubscription = event.data.object as Stripe.Subscription;
       const userId = stripeSubscription.metadata?.userId;
       const planId = stripeSubscription.metadata?.planId;

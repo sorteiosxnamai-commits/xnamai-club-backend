@@ -57,6 +57,7 @@ async function getOrCreateStripeCustomer(user: User) {
 const checkoutSchema = z.object({
   planId: z.string().uuid(),
   paymentMethodType: z.enum(['CREDIT_CARD', 'PIX_RECURRING']).optional().default('CREDIT_CARD'),
+  replaceBoleto: z.boolean().optional().default(false),
 });
 
 const upgradeSchema = z.object({
@@ -83,7 +84,7 @@ subscriptionsRouter.post('/checkout', async (req, res) => {
   const parsed = checkoutSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Dados inválidos.', issues: parsed.error.flatten() });
 
-  const { planId, paymentMethodType } = parsed.data;
+  const { planId, paymentMethodType, replaceBoleto } = parsed.data;
   try {
     const stripe = requireStripe();
     const user = await AppDataSource.getRepository(User).findOneByOrFail({ id: req.auth!.sub });
@@ -92,19 +93,30 @@ subscriptionsRouter.post('/checkout', async (req, res) => {
       return res.status(400).json({ message: 'Plano indisponível para assinatura Stripe.' });
     }
 
-    const existing = await AppDataSource.getRepository(Subscription).findOne({
+    let existing = await AppDataSource.getRepository(Subscription).findOne({
       where: { user: { id: user.id }, status: SubscriptionStatus.ACTIVE },
       order: { createdAt: 'DESC' },
     });
+    const method = await AppDataSource.getRepository(PaymentMethod).findOne({
+      where: { user: { id: user.id }, active: true }, order: { createdAt: 'DESC' },
+    });
+    const boletoToReplace = replaceBoleto && paymentMethodType === 'PIX_RECURRING' && method?.type === PaymentMethodType.BOLETO
+      ? await AppDataSource.getRepository(Subscription).findOne({ where: { user: { id: user.id } }, order: { createdAt: 'DESC' } })
+      : null;
     if (existing?.gatewaySubscriptionId) {
+      const current = await stripe.subscriptions.retrieve(existing.gatewaySubscriptionId, { expand: ['default_payment_method', 'latest_invoice'] });
+      existing = await upsertLocalSubscription({ user, plan: existing.plan, stripeSubscription: current });
+      if (existing.status === SubscriptionStatus.CANCELLED) existing = null;
+    }
+    if (existing?.gatewaySubscriptionId && boletoToReplace?.id !== existing.id) {
       return res.status(409).json({ message: 'O usuário já possui uma assinatura ativa.' });
     }
-    const pixCovered = Boolean(existing?.currentPeriodEnd && new Date(existing.currentPeriodEnd).getTime() > Date.now());
+    const pixCovered = method?.type === PaymentMethodType.PIX_RECURRING && Boolean(existing?.currentPeriodEnd && new Date(existing.currentPeriodEnd).getTime() > Date.now());
     if (paymentMethodType !== 'PIX_RECURRING' && pixCovered) {
       return res.status(409).json({ message: 'O PIX deste mês ainda está válido. O cartão fica disponível depois do vencimento.' });
     }
 
-    const customerId = await getOrCreateStripeCustomer(user);
+    const customerId = boletoToReplace?.gatewayCustomerId || await getOrCreateStripeCustomer(user);
     if (paymentMethodType !== 'PIX_RECURRING') {
       const blocking = await findBlockingStripeSubscription(customerId);
       if (blocking) {
@@ -128,7 +140,7 @@ subscriptionsRouter.post('/checkout', async (req, res) => {
         client_reference_id: user.id,
         locale: 'pt-BR',
         success_url: `${env.frontendUrl}/confirmacao?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${env.frontendUrl}/checkout`,
+        cancel_url: `${env.frontendUrl}/${replaceBoleto ? 'app' : 'checkout'}`,
         payment_method_types: ['pix'],
         line_items: [{
           quantity: 1,
@@ -143,6 +155,7 @@ subscriptionsRouter.post('/checkout', async (req, res) => {
           planId: plan.id,
           paymentMethodType,
           purpose: PIX_MONTH_PURPOSE,
+          ...(boletoToReplace?.gatewaySubscriptionId ? { replacesBoletoSubscriptionId: boletoToReplace.id } : {}),
         },
         payment_intent_data: {
           metadata: {
@@ -274,13 +287,6 @@ subscriptionsRouter.post('/payment-method', async (req, res) => {
       return res.status(409).json({ message: 'Assinatura cancelada. Para usar outro cartão, assine novamente.' });
     }
 
-    const paymentMethod = await AppDataSource.getRepository(PaymentMethod).findOne({
-      where: { user: { id: user.id }, active: true },
-      order: { createdAt: 'DESC' },
-    });
-    if (paymentMethod?.type === PaymentMethodType.BOLETO) {
-      return res.status(409).json({ message: 'Quem paga no boleto não troca o cartão por aqui. Fale com o atendimento.' });
-    }
     if (!subscription.gatewaySubscriptionId) {
       return res.status(409).json({ message: 'A assinatura atual não está vinculada à Stripe.' });
     }

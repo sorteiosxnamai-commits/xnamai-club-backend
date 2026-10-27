@@ -145,14 +145,25 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     });
     const boletoCard = await request('/api/subscriptions/payment-method', { method: 'POST', body: '{}' });
     assert.equal(boletoCard.status, 409);
-    assert.match(boletoCard.body.message, /boleto/i);
+    assert.match(boletoCard.body.message, /Stripe/i);
     // A canceled Stripe subscription must reconcile locally without another update.
     const stripeConfig = require('../dist/config/stripe');
     const originalRequireStripe = stripeConfig.requireStripe;
     const subscriptionRepo = AppDataSource.getRepository(Subscription);
     const boletoSubscription = await subscriptionRepo.findOneByOrFail({ user: { id: user.id } });
     boletoSubscription.gatewaySubscriptionId = 'sub_canceled_boleto';
+    boletoSubscription.gatewayCustomerId = 'cus_boleto';
     await subscriptionRepo.save(boletoSubscription);
+    stripeConfig.requireStripe = () => ({ checkout: { sessions: { create: async (params) => {
+      assert.equal(params.mode, 'setup');
+      assert.equal(params.customer, 'cus_boleto');
+      assert.deepEqual(params.payment_method_types, ['card']);
+      assert.equal(params.metadata.subscriptionId, boletoSubscription.id);
+      return { url: 'https://checkout.stripe.com/test-boleto-card' };
+    } } } });
+    const boletoSetup = await request('/api/subscriptions/payment-method', { method: 'POST', body: '{}' });
+    assert.equal(boletoSetup.status, 200);
+    assert.equal(boletoSetup.body.url, 'https://checkout.stripe.com/test-boleto-card');
     stripeConfig.requireStripe = () => ({ subscriptions: {
       retrieve: async () => ({ id: 'sub_canceled_boleto', status: 'canceled' }),
       update: async () => { throw new Error('Canceled subscriptions cannot be updated'); },
@@ -172,6 +183,7 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
       boletoSubscription.status = SubscriptionStatus.ACTIVE;
       boletoSubscription.cancelledAt = null;
       boletoSubscription.gatewaySubscriptionId = null;
+      boletoSubscription.gatewayCustomerId = null;
       await subscriptionRepo.save(boletoSubscription);
     }
     assert.equal((await request('/api/subscriptions/upgrade', { method: 'POST',

@@ -620,6 +620,27 @@ export async function applyOneTimePixPayment(session: Stripe.Checkout.Session) {
 
   const paidAt = await pixPaidAt(session);
   const subscriptionRepo = AppDataSource.getRepository(Subscription);
+  const replacementId = session.metadata.replacesBoletoSubscriptionId;
+  let boletoPaidUntil: Date | null = null;
+  if (replacementId) {
+    const previous = await subscriptionRepo.findOne({ where: { id: replacementId, user: { id: user.id } } });
+    if (!previous?.gatewaySubscriptionId) throw new Error('Assinatura de boleto não encontrada.');
+    const client = requireStripe();
+    const current = await client.subscriptions.retrieve(previous.gatewaySubscriptionId);
+    const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
+    const previousCustomer = typeof current.customer === 'string' ? current.customer : current.customer.id;
+    if (customerId !== previousCustomer) throw new Error('Pagamento não pertence ao cliente da assinatura.');
+    const invoices = await invoiceRepo.find({ where: { subscription: { id: previous.id }, status: InvoiceStatus.PAID } });
+    boletoPaidUntil = invoices.filter((invoice) => invoice.paidAt)
+      .map((invoice) => addCalendarMonth(invoice.paidAt!))
+      .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+    if (current.status !== 'canceled' && current.status !== 'incomplete_expired') {
+      await client.subscriptions.cancel(current.id, { invoice_now: false, prorate: false });
+    }
+    previous.status = SubscriptionStatus.CANCELLED;
+    previous.cancelledAt = previous.cancelledAt ?? paidAt;
+    await subscriptionRepo.save(previous);
+  }
   let subscription = await subscriptionRepo.findOne({
     where: { user: { id: user.id } },
     order: { createdAt: 'DESC' },
@@ -633,6 +654,11 @@ export async function applyOneTimePixPayment(session: Stripe.Checkout.Session) {
       plan,
       gatewayCustomerId: typeof session.customer === 'string' ? session.customer : session.customer?.id ?? user.stripeCustomerId ?? null,
       gatewaySubscriptionId: null,
+      ...(boletoPaidUntil && boletoPaidUntil > paidAt ? {
+        status: SubscriptionStatus.ACTIVE,
+        currentPeriodStart: paidAt,
+        currentPeriodEnd: boletoPaidUntil,
+      } : {}),
     });
   }
 
@@ -814,6 +840,8 @@ export async function applySetupPaymentMethod(session: Stripe.Checkout.Session):
   const current = await stripeClient.subscriptions.retrieve(subscription.gatewaySubscriptionId);
   let updated = await stripeClient.subscriptions.update(subscription.gatewaySubscriptionId, {
     default_payment_method: paymentMethodId,
+    collection_method: 'charge_automatically',
+    payment_settings: { payment_method_types: ['card'] },
     metadata: { ...current.metadata, paymentMethodType: 'CREDIT_CARD' },
     expand: ['default_payment_method', 'latest_invoice'],
   });
@@ -825,6 +853,10 @@ export async function applySetupPaymentMethod(session: Stripe.Checkout.Session):
     : updated.latest_invoice;
   if (latestInvoice?.id && latestInvoice.status === 'open' && latestInvoice.amount_due > 0) {
     try {
+      await stripeClient.invoices.update(latestInvoice.id, {
+        default_payment_method: paymentMethodId,
+        payment_settings: { payment_method_types: ['card'] },
+      });
       await stripeClient.invoices.pay(latestInvoice.id, { payment_method: paymentMethodId });
       invoicePaid = true;
       updated = await stripeClient.subscriptions.retrieve(subscription.gatewaySubscriptionId, {
