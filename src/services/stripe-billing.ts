@@ -369,14 +369,15 @@ export async function applyPaidPeriodAccess(subscription: Subscription, stripeIn
   return AppDataSource.getRepository(Subscription).save(subscription);
 }
 
-export async function repairPaidThroughSubscriptions() {
+export async function repairPaidThroughSubscriptions(syncPayments = false) {
   const since = new Date();
   since.setDate(since.getDate() - 45);
   const rows = await AppDataSource.getRepository(Subscription)
     .createQueryBuilder('subscription')
     .leftJoin('subscription.invoices', 'invoice')
-    .where('subscription.status IN (:...statuses)', {
+    .where('(subscription.status IN (:...statuses) OR subscription.currentPeriodEnd <= :now)', {
       statuses: [SubscriptionStatus.CANCELLED, SubscriptionStatus.PENDING],
+      now: new Date(),
     })
     .andWhere('(invoice.status = :paid OR subscription.createdAt >= :since)', {
       paid: InvoiceStatus.PAID,
@@ -385,15 +386,18 @@ export async function repairPaidThroughSubscriptions() {
     .getMany();
 
   let updated = 0;
-  for (const subscription of rows) {
+  await mapPool(rows, 6, async (subscription) => {
     try {
       const before = subscription.status;
+      // Canceled subscriptions are absent from Stripe's active subscription list.
+      // Their old local paid invoice must not hide a renewal paid afterward.
+      if (syncPayments && subscription.gatewaySubscriptionId) await syncStripeInvoices(subscription);
       const next = await applyPaidPeriodAccess(subscription);
       if (next.status !== before) updated += 1;
     } catch (error) {
       console.error(`Falha ao reativar período pago da assinatura ${subscription.id}:`, error);
     }
-  }
+  });
   return updated;
 }
 

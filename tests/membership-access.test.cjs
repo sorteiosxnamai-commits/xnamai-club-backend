@@ -12,6 +12,18 @@ function addDays(from, days) {
   return new Date(from.getTime() + days * 24 * 60 * 60 * 1000);
 }
 
+test('cancellation preserves a confirmed paid month but does not grant access without current payment', () => {
+  const today = new Date();
+  const canceled = {
+    status: SubscriptionStatus.CANCELLED,
+    currentPeriodStart: today,
+    currentPeriodEnd: addDays(today, 30),
+  };
+  assert.equal(membershipAccess(canceled, [paidInvoice(today)]).active, true);
+  assert.equal(membershipAccess(canceled, []).active, false);
+  assert.equal(membershipAccess(canceled, [paidInvoice(addDays(today, -60))]).active, false);
+});
+
 test('duplicate checkout: desk uses the kept paid subscription, not the later cancelled one', () => {
   const created = addDays(new Date(), -42);
   const duplicateAt = new Date(created.getTime() + 2 * 60 * 60 * 1000);

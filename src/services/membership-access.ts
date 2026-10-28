@@ -75,7 +75,8 @@ export function membershipAccess(
     .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
 
   if (subscription.status === SubscriptionStatus.CANCELLED) {
-    return { active: false, validUntil, renewed, renewedAt };
+    // Cancellation stops recurrence; a confirmed paid month still grants access.
+    return { active: Boolean(paidUntil && paidUntil.getTime() > Date.now()), validUntil: paidUntil, renewed, renewedAt };
   }
 
   const active = validUntil

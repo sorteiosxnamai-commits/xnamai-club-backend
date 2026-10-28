@@ -12,7 +12,7 @@ import { cacheDel, cacheGet, cacheSet } from '../services/cache';
 import { membershipAccess, pickPrimarySubscription } from '../services/membership-access';
 import { reconcilePaidPixSessions, repairPaidThroughSubscriptions, syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
 
-const MEMBERS_CACHE_KEY = 'atendimento:members:v7';
+const MEMBERS_CACHE_KEY = 'atendimento:members:v8';
 const MEMBERS_CACHE_TTL = 45;
 
 export const atendimentoRouter = Router();
@@ -192,7 +192,7 @@ async function listMembers() {
 
 atendimentoRouter.get('/members', async (req, res) => {
   const refresh = String(req.query.refresh || '') === '1';
-  const repaired = await repairPaidThroughSubscriptions();
+  const repaired = await repairPaidThroughSubscriptions(refresh);
   if (repaired) await cacheDel(MEMBERS_CACHE_KEY);
   if (!refresh) {
     const cached = await cacheGet<{ joined: unknown[]; unsigned: unknown[] }>(MEMBERS_CACHE_KEY);
