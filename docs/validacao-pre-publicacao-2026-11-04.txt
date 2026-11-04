@@ -1,0 +1,24 @@
+Validação antes de publicação — XNaMai Club
+04 de novembro de 2026
+
+O usuário informou que executou o SQL de migração no banco. Nesta sessão não há conexão PostgreSQL configurada para conferir diretamente o esquema de produção; a execução foi informada pelo usuário, não verificada pelo agente.
+
+Verificações repetidas nesta rodada:
+Frontend: 28 testes aprovados e build aprovado.
+Backend: 29 testes aprovados e build TypeScript aprovado.
+Total: 57 testes aprovados, sem falhas.
+Nenhum erro de whitespace encontrado por git diff --check.
+SQL revisado contra as entidades e a migração TypeORM: duas tabelas novas (site_content e priority_reservations) e uma coluna nullable (subscriptions.billingAmountCents), sem exclusão ou reprecificação de registros.
+
+Consultas públicas de leitura:
+https://clubxnamai.com.br/ respondeu HTTP 200.
+https://xnamai-club-backend.onrender.com/api/health respondeu HTTP 200, com ok=true e database=true.
+https://xnamai-club-backend.onrender.com/api/plans respondeu HTTP 200. Ainda não apresentou pixPriceCents, compatível com a versão anterior permanecer publicada.
+
+Cobertura relevante: cadastro CNPJ numérico/alfanumérico e duplicidade, regularização de conta antiga, preservação do acesso pago, cadastro e login, recuperação de senha, seleção dos links Asaas, preço PIX por plano, clientes de boleto, permissões de atendimento, revogação de papel, edição e publicação de conteúdo, conflitos de revisão, proteção das credenciais no seed, previsões financeiras, concorrência de reservas e ativação tardia do Fast Pass.
+
+Mudanças de comportamento intencionais: novos cadastros e contratações exigem CNPJ e empresa; atendimento exige ADMIN/SUPPORT; novas adesões são encaminhadas aos links Asaas com conferência manual; Fast Pass bloqueia encaminhamento quando esgotado. Isso significa que a atualização não mantém todo o comportamento antigo: corrige precisamente os pontos solicitados.
+
+Não foram realizados pagamentos reais, consulta de situação do CNPJ na Receita Federal, login em produção com credenciais de cliente ou validação direta do PostgreSQL de produção. Testes locais não constituem garantia de ausência de falhas em qualquer configuração de produção.
+
+Conclusão: não foram detectadas regressões nas suítes executadas. Commit e push na branch fix/club-planos-cnpj-admin preservam a main. Para publicar, confirmar as nove colunas esperadas no banco e fazer rollout da API antes do frontend, usando os ambientes corretos. A publicação ainda requer acesso aos destinos e validação depois do deploy.
