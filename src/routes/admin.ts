@@ -10,7 +10,6 @@ import { Invoice, InvoiceStatus } from '../entities/Invoice';
 import { pickPrimarySubscription } from '../services/membership-access';
 import { syncAllStripeInvoices } from '../services/stripe-billing';
 import { buildRevenueForecast } from '../services/revenue-forecast';
-import { fetchFrontendVercelLogs } from '../services/vercel-logs';
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole(UserRole.ADMIN));
@@ -113,6 +112,7 @@ adminRouter.get('/dashboard', async (_req, res) => {
     nextMonthForecastCents: forecast.nextMonthForecastCents,
     yearForecastCents: forecast.yearForecastCents,
     forecastSubscribers: forecast.forecastSubscribers,
+    unpricedSubscribers: forecast.unpricedSubscribers,
     forecastByMonth: forecast.forecastByMonth,
   });
 });
@@ -204,6 +204,7 @@ adminRouter.get('/payments', async (_req, res) => {
     forecastSubscribers: forecast.forecastSubscribers,
     forecastByMonth: forecast.forecastByMonth,
     upcoming: forecast.upcomingCharges,
+    unpricedSubscribers: forecast.unpricedSubscribers,
     invoices: rows.map((invoice) => ({
       id: invoice.id,
       amountCents: invoice.amountCents,
@@ -238,14 +239,4 @@ adminRouter.patch('/plans/:id', async (req, res) => {
 
   Object.assign(plan, parsed.data);
   res.json(await planRepo.save(plan));
-});
-
-adminRouter.get('/vercel-logs', async (req, res) => {
-  const limit = Number(req.query.limit);
-  try {
-    res.json(await fetchFrontendVercelLogs(Number.isFinite(limit) ? limit : 150));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Falha ao buscar logs da Vercel.';
-    res.status(502).json({ message });
-  }
 });

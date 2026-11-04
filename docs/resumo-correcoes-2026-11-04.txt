@@ -1,0 +1,12 @@
+Resumo das correções do XNaMai Club
+04 de novembro de 2026
+
+Foram atualizados os valores e as condições dos planos Basic e Fast Pass. O Basic passou a apresentar o valor original de R$ 299,99 por mês, R$ 149,97 no cartão durante o lançamento com recorrência selecionada e R$ 199,99 no PIX. O Fast Pass apresenta R$ 599,99 como valor original, R$ 297,97 no cartão com recorrência e R$ 349,99 no PIX. Os quatro links Asaas foram incluídos, mantendo a confirmação dos pagamentos e a liberação de acesso sob conferência manual.
+
+O cadastro e a contratação passaram a exigir nome da empresa e CNPJ válido, numérico ou alfanumérico. CPF não é aceito em novos cadastros. Contas antigas podem regularizar os dados sem perder o período já pago. A validação confere formato e dígitos verificadores, sem consultar a situação cadastral na Receita Federal.
+
+Foi adicionado ao admin um editor de textos para cinco telas, com prévia, publicação, histórico e restauração dos textos padrão. O atendimento foi protegido por autenticação e permissões, os logs Vercel foram removidos e as atualizações do GitHub foram incorporadas.
+
+Também foram corrigidos os preços PIX legados e as previsões financeiras. A inicialização passou a preservar senhas e configurações existentes. O Fast Pass recebeu controle de reservas e disponibilidade no portal; pagamentos feitos diretamente nos links externos ainda exigem conferência manual das vagas.
+
+A última validação anterior ao envio registrou 57 testes aprovados e os dois builds aprovados. As alterações foram preparadas para envio em uma branch de correções. A publicação em produção continua dependendo da aplicação da migração do banco e do acesso aos projetos corretos na Vercel e no Render. Não houve homologação de pagamentos reais nem conferência da configuração interna dos links no painel Asaas.

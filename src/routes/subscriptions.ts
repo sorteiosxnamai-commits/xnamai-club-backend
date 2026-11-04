@@ -1,18 +1,42 @@
+import { requireBusinessRegistration } from '../middleware/business-registration';
 import { Router } from 'express';
 import { z } from 'zod';
 import Stripe from 'stripe';
 import { AppDataSource } from '../config/data-source';
 import { env } from '../config/env';
 import { requireStripe } from '../config/stripe';
-import { requireAuth } from '../middleware/auth';
+import { requireAuth, requireRole } from '../middleware/auth';
 import { Plan } from '../entities/Plan';
-import { User } from '../entities/User';
+import { User, UserRole } from '../entities/User';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
 import { PaymentMethod, PaymentMethodType } from '../entities/PaymentMethod';
-import { applyOneTimePixPayment, applySetupPaymentMethod, auditSubscription, enforceSingleActiveStripeSubscription, expireOpenSubscriptionCheckouts, findBlockingStripeSubscription, PAYMENT_METHOD_UPDATE_PURPOSE, PIX_MONTH_PRICE_CENTS, PIX_MONTH_PURPOSE, recordStripeInvoice, syncStripeInvoices, upsertLocalSubscription } from '../services/stripe-billing';
+import { clubOffer } from '../config/club-pricing';
+import { reservePrioritySeat, releasePrioritySeat } from '../services/priority-capacity';
+import { applyOneTimePixPayment, applySetupPaymentMethod, auditSubscription, enforceSingleActiveStripeSubscription, expireOpenSubscriptionCheckouts, findBlockingStripeSubscription, PAYMENT_METHOD_UPDATE_PURPOSE, PIX_MONTH_PURPOSE, recordStripeInvoice, syncStripeInvoices, upsertLocalSubscription } from '../services/stripe-billing';
 
 export const subscriptionsRouter = Router();
-subscriptionsRouter.use(requireAuth);
+subscriptionsRouter.use(requireAuth, requireRole(UserRole.CUSTOMER));
+
+subscriptionsRouter.post('/payment-link', requireBusinessRegistration, async (req, res, next) => {
+  const parsed = z.object({ code: z.enum(['LAUNCH', 'PRIORITY']), method: z.enum(['CREDIT_CARD', 'PIX']) }).strict().safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: 'Plano ou forma de pagamento inválidos.' });
+  try {
+    const plan = await AppDataSource.getRepository(Plan).findOneBy({ code: parsed.data.code, active: true });
+    if (!plan) return res.status(400).json({ message: 'Plano indisponível.' });
+    const subscriptions = await AppDataSource.getRepository(Subscription).find({ where: { user: { id: req.auth!.sub } } });
+    const covered = subscriptions.some(row => row.status === SubscriptionStatus.PENDING
+      || (row.currentPeriodEnd && new Date(row.currentPeriodEnd).getTime() > Date.now())
+      || (row.status === SubscriptionStatus.ACTIVE && !row.currentPeriodEnd)
+      || (row.gatewaySubscriptionId && row.status !== SubscriptionStatus.CANCELLED));
+    if (covered) return res.status(409).json({ message: 'Você já possui uma assinatura em andamento. Fale com o atendimento antes de pagar novamente.' });
+    if (plan.code === 'PRIORITY') {
+      try { await reservePrioritySeat(req.auth!.sub); }
+      catch (error) { return res.status(409).json({ message: (error as Error).message }); }
+    }
+    const offer = clubOffer(plan.code);
+    return res.json({ url: parsed.data.method === 'PIX' ? offer.pixUrl : offer.cardUrl, amountCents: parsed.data.method === 'PIX' ? offer.pix : offer.card });
+  } catch (error) { next(error); }
+});
 
 function nextCalendarMonth(from = new Date()) {
   const next = new Date(from);
@@ -80,11 +104,12 @@ function stripePaymentMethodType(pm: Stripe.Subscription['default_payment_method
   return fallback;
 }
 
-subscriptionsRouter.post('/checkout', async (req, res) => {
+subscriptionsRouter.post('/checkout', requireBusinessRegistration, async (req, res) => {
   const parsed = checkoutSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Dados inválidos.', issues: parsed.error.flatten() });
 
   const { planId, paymentMethodType, replaceBoleto } = parsed.data;
+  let priorityLease: string | null = null;
   try {
     const stripe = requireStripe();
     const user = await AppDataSource.getRepository(User).findOneByOrFail({ id: req.auth!.sub });
@@ -134,8 +159,10 @@ subscriptionsRouter.post('/checkout', async (req, res) => {
       if (plan.monthlyPriceCents == null) {
         return res.status(400).json({ message: 'Plano indisponível para pagamento PIX.' });
       }
+      if (plan.code === 'PRIORITY') { priorityLease = await reservePrioritySeat(user.id); }
       const session = await stripe.checkout.sessions.create({
         mode: 'payment',
+        expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
         customer: customerId,
         client_reference_id: user.id,
         locale: 'pt-BR',
@@ -146,7 +173,7 @@ subscriptionsRouter.post('/checkout', async (req, res) => {
           quantity: 1,
           price_data: {
             currency: 'brl',
-            unit_amount: PIX_MONTH_PRICE_CENTS,
+            unit_amount: clubOffer(plan.code).pix,
             product_data: { name: `${plan.name} — 1 mês` },
           },
         }],
@@ -186,6 +213,7 @@ subscriptionsRouter.post('/checkout', async (req, res) => {
 
     const sessionParams: Stripe.Checkout.SessionCreateParams = {
       mode: 'subscription',
+      expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
       customer: customerId,
       client_reference_id: user.id,
       locale: 'pt-BR',
@@ -198,6 +226,7 @@ subscriptionsRouter.post('/checkout', async (req, res) => {
       metadata: { userId: user.id, planId: plan.id, paymentMethodType },
     };
 
+    if (plan.code === 'PRIORITY') { priorityLease = await reservePrioritySeat(user.id); }
     const session = await stripe.checkout.sessions.create(sessionParams);
 
     res.json({
@@ -205,6 +234,7 @@ subscriptionsRouter.post('/checkout', async (req, res) => {
       nextBillingDate: nextCalendarMonth().toISOString(),
     });
   } catch (error) {
+    if (priorityLease) await releasePrioritySeat(priorityLease).catch(() => {});
     console.error('Falha no checkout Stripe:', error);
     const message = paymentMethodType === 'PIX_RECURRING'
       ? pixCheckoutUnavailableMessage(error)
@@ -387,10 +417,11 @@ function isIgnorableStripeCancelError(error: unknown) {
   return /no such subscription|already been canceled|subscription is canceled/i.test(message);
 }
 
-subscriptionsRouter.post('/upgrade', async (req, res) => {
+subscriptionsRouter.post('/upgrade', requireBusinessRegistration, async (req, res) => {
   const parsed = upgradeSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Plano inválido.', issues: parsed.error.flatten() });
 
+  let priorityLease: string | null = null;
   try {
     const subscriptionRepo = AppDataSource.getRepository(Subscription);
     const subscription = await subscriptionRepo.findOne({
@@ -417,6 +448,7 @@ subscriptionsRouter.post('/upgrade', async (req, res) => {
     const item = current.items.data[0];
     if (!item) return res.status(409).json({ message: 'A assinatura Stripe não possui um item atualizável.' });
 
+    priorityLease = await reservePrioritySeat(req.auth!.sub);
     const upgraded = await stripe.subscriptions.update(subscription.gatewaySubscriptionId, {
       items: [{ id: item.id, price: targetPlan.stripePriceId }],
       metadata: {
@@ -437,8 +469,10 @@ subscriptionsRouter.post('/upgrade', async (req, res) => {
     });
     await syncStripeInvoices(saved);
     await auditSubscription(req.auth!.sub, saved.id, 'SUBSCRIPTION_UPGRADED');
+    if (priorityLease) await releasePrioritySeat(priorityLease);
     return res.json(subscriptionPublicView(saved));
   } catch (error) {
+    if (priorityLease) await releasePrioritySeat(priorityLease).catch(() => {});
     console.error('Falha ao fazer upgrade da assinatura Stripe:', error);
     return res.status(400).json({
       message: 'Não foi possível concluir o upgrade na Stripe. Confira a forma de pagamento e tente novamente.',

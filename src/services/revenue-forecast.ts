@@ -3,6 +3,7 @@ import { AppDataSource } from '../config/data-source';
 import { Plan } from '../entities/Plan';
 import { User } from '../entities/User';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
+import { PaymentMethodType } from '../entities/PaymentMethod';
 
 const MONTHS_PT = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 const FORECAST_STATUSES = [
@@ -85,14 +86,21 @@ export async function buildRevenueForecast() {
   const now = new Date();
   const subscriptions = await AppDataSource.getRepository(Subscription).find({
     where: { status: In(FORECAST_STATUSES) },
-    relations: ['user', 'plan'],
+    relations: ['user', 'user.paymentMethods', 'plan', 'invoices'],
   });
 
   const upcoming: UpcomingCharge[] = [];
   let monthlyRecurringCents = 0;
+  let unpricedSubscribers = 0;
   for (const subscription of subscriptions) {
     if (subscription.cancelledAt) continue;
-    const amountCents = subscription.plan?.monthlyPriceCents ?? 0;
+    if (!subscription.gatewaySubscriptionId) continue;
+    const method = subscription.user?.paymentMethods?.filter(row => row.active)
+      .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0];
+    if (method?.type === PaymentMethodType.PIX_RECURRING) continue;
+    // Invoice totals can be prorated. Forecast only a verified recurring contract amount.
+    if (subscription.billingAmountCents == null) { unpricedSubscribers += 1; continue; }
+    const amountCents = subscription.billingAmountCents;
     if (amountCents <= 0) continue;
     monthlyRecurringCents += amountCents;
     upcoming.push({
@@ -113,6 +121,7 @@ export async function buildRevenueForecast() {
 
   return {
     forecastSubscribers: upcoming.length,
+    unpricedSubscribers,
     nextMonthForecastCents: monthlyRecurringCents,
     yearForecastCents: monthlyRecurringCents * 12,
     forecastByMonth,

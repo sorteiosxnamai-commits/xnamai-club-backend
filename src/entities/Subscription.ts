@@ -29,6 +29,9 @@ export class Subscription {
   @Column({ type: 'varchar', default: SubscriptionStatus.PENDING })
   status!: SubscriptionStatus;
 
+  @Column({ type: 'integer', nullable: true })
+  billingAmountCents!: number | null;
+
   @Column({ type: dateTimeColumnType, nullable: true })
   startedAt!: Date | null;
 

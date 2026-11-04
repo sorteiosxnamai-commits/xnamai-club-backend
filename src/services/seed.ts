@@ -9,7 +9,7 @@ const LAUNCH_PLAN = {
   code: 'LAUNCH',
   name: 'Plano Basic',
   monthlyPriceCents: 14997,
-  compareAtPriceCents: 29997,
+  compareAtPriceCents: 29999,
   purchaseLimitCents: null as number | null,
   description: 'Acesso aos preços exclusivos do XNaMai Club, com pedidos feitos com antecedência mínima de 24 horas.',
   active: true,
@@ -20,7 +20,7 @@ const PRIORITY_PLAN = {
   code: 'PRIORITY',
   name: 'Plano Prioridade',
   monthlyPriceCents: 29797,
-  compareAtPriceCents: 59997,
+  compareAtPriceCents: 59999,
   purchaseLimitCents: null as number | null,
   description: 'O Fast Pass da XNaMai: pedidos no mesmo dia com antecedência mínima de 6 horas e prioridade na separação.',
   active: true,
@@ -75,26 +75,13 @@ async function syncClubPlans() {
     if (!plan) {
       plan = planRepo.create(definition);
     } else {
-      const priceChanged = plan.monthlyPriceCents !== definition.monthlyPriceCents;
-      plan.name = definition.name;
-      plan.monthlyPriceCents = definition.monthlyPriceCents;
-      plan.compareAtPriceCents = definition.compareAtPriceCents;
-      plan.purchaseLimitCents = definition.purchaseLimitCents;
-      plan.description = definition.description;
-      plan.active = true;
-      plan.sortOrder = definition.sortOrder;
-      if (priceChanged) plan.stripePriceId = null;
+      // Migrate only the old comparison price; preserve admin-managed plan settings.
+      if ((plan.code === 'LAUNCH' && plan.compareAtPriceCents === 29997)
+        || (plan.code === 'PRIORITY' && plan.compareAtPriceCents === 59997)) {
+        plan.compareAtPriceCents = definition.compareAtPriceCents;
+      }
     }
     await planRepo.save(plan);
-  }
-
-  const activeCodes = new Set(CLUB_PLANS.map((plan) => plan.code));
-  const others = await planRepo.find();
-  for (const plan of others) {
-    if (activeCodes.has(plan.code) || !plan.active) continue;
-    plan.active = false;
-    await planRepo.save(plan);
-    console.log(`Plano desativado: ${plan.code}`);
   }
 }
 
@@ -124,53 +111,25 @@ export async function seedInitialData() {
   await ensureStripePrices();
   await backfillLaunchCashbackEligibility();
 
-  const userRepo = AppDataSource.getRepository(User);
-  const adminEmail = (process.env.ADMIN_EMAIL || 'admin@xnamai.local').toLowerCase();
-  const adminPassword = process.env.ADMIN_PASSWORD || 'Admin123!';
-  const passwordHash = await bcrypt.hash(adminPassword, 12);
+  await bootstrapStaff(UserRole.ADMIN, 'ADMIN', 'admin@xnamai.local', 'Admin123!', 'Admin XNaMai');
+  await bootstrapStaff(UserRole.SUPPORT, 'SUPPORT', 'atendimento@xnamai.local', 'Atende123!', 'Atendimento XNaMai');
+}
 
-  let admin = await userRepo.findOne({ where: { email: adminEmail } });
-  if (!admin) {
-    admin = await userRepo.findOne({ where: { role: UserRole.ADMIN } });
+async function bootstrapStaff(role: UserRole, prefix: string, demoEmail: string, demoPassword: string, name: string) {
+  const repo = AppDataSource.getRepository(User);
+  if (await repo.findOne({ where: { role } })) return;
+  const configuredEmail = process.env[`${prefix}_EMAIL`]?.trim();
+  const configuredPassword = process.env[`${prefix}_PASSWORD`];
+  if (process.env.NODE_ENV === 'production' && (!configuredEmail || !configuredPassword || configuredPassword.length < 12)) {
+    console.warn(`${prefix}: configure e-mail e senha de pelo menos 12 caracteres para criar a conta inicial.`);
+    return;
   }
-  if (!admin) {
-    await userRepo.save(userRepo.create({
-      email: adminEmail,
-      name: 'Admin XNaMai',
-      companyName: 'XNaMai',
-      passwordHash,
-      role: UserRole.ADMIN,
-    }));
-    console.log(`Admin criado: ${adminEmail}`);
-  } else {
-    admin.email = adminEmail;
-    admin.role = UserRole.ADMIN;
-    admin.passwordHash = passwordHash;
-    await userRepo.save(admin);
-    console.log(`Admin sincronizado: ${adminEmail}`);
+  const email = (configuredEmail || demoEmail).toLowerCase();
+  if (await repo.findOneBy({ email })) {
+    console.warn(`${prefix}: e-mail já pertence a uma conta; nenhum papel foi alterado.`);
+    return;
   }
-
-  const supportEmail = (process.env.SUPPORT_EMAIL || 'atendimento@xnamai.local').toLowerCase();
-  const supportPassword = process.env.SUPPORT_PASSWORD || 'Atende123!';
-  const supportHash = await bcrypt.hash(supportPassword, 12);
-  let support = await userRepo.findOne({ where: { email: supportEmail } });
-  if (!support) {
-    support = await userRepo.findOne({ where: { role: UserRole.SUPPORT } });
-  }
-  if (!support) {
-    await userRepo.save(userRepo.create({
-      email: supportEmail,
-      name: 'Atendimento XNaMai',
-      companyName: 'XNaMai',
-      passwordHash: supportHash,
-      role: UserRole.SUPPORT,
-    }));
-    console.log(`Atendimento criado: ${supportEmail}`);
-  } else {
-    support.email = supportEmail;
-    support.role = UserRole.SUPPORT;
-    support.passwordHash = supportHash;
-    await userRepo.save(support);
-    console.log(`Atendimento sincronizado: ${supportEmail}`);
-  }
+  await repo.save(repo.create({ email, name, companyName: 'XNaMai', role,
+    passwordHash: await bcrypt.hash(configuredPassword || demoPassword, 12) }));
+  console.log(`${prefix}: conta inicial criada.`);
 }

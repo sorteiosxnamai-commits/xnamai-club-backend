@@ -27,12 +27,10 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   try {
     const token = header.slice('Bearer '.length);
     req.auth = jwt.verify(token, env.jwtSecret) as JwtPayload;
-    if (req.auth.role === UserRole.CUSTOMER) {
       const user = await AppDataSource.getRepository(User).findOne({ where: { id: req.auth.sub } });
-      if (!user || user.role !== UserRole.CUSTOMER || (user.authVersion || 0) !== (req.auth.authVersion || 0)) {
+      if (!user || user.role !== req.auth.role || (user.authVersion || 0) !== (req.auth.authVersion || 0)) {
         return res.status(401).json({ message: 'Token inválido ou expirado.' });
       }
-    }
     next();
   } catch {
     return res.status(401).json({ message: 'Token inválido ou expirado.' });

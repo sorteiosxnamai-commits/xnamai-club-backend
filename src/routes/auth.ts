@@ -6,6 +6,7 @@ import { User, UserRole } from '../entities/User';
 import { requireAuth, requireRole, signAccessToken } from '../middleware/auth';
 import { audit } from '../services/audit';
 import { createPasswordResetRouter } from './password-reset';
+import { isValidCnpj, normalizeCnpj } from '../services/cnpj';
 
 export const authRouter = Router();
 
@@ -13,30 +14,6 @@ const BRAZIL_STATES = [
   'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS',
   'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO',
 ] as const;
-
-function onlyDigits(value: string) {
-  return value.replace(/\D/g, '');
-}
-
-function isValidCpf(digits: string) {
-  if (digits.length !== 11 || /^(\d)\1+$/.test(digits)) return false;
-  const check = (length: number) => {
-    const sum = digits.slice(0, length).split('').reduce((total, digit, index) => total + Number(digit) * (length + 1 - index), 0);
-    const rest = (sum * 10) % 11;
-    return (rest === 10 ? 0 : rest) === Number(digits[length]);
-  };
-  return check(9) && check(10);
-}
-
-function isValidCnpj(digits: string) {
-  if (digits.length !== 14 || /^(\d)\1+$/.test(digits)) return false;
-  const check = (weights: number[]) => {
-    const sum = weights.reduce((total, weight, index) => total + Number(digits[index]) * weight, 0);
-    const rest = sum % 11;
-    return (rest < 2 ? 0 : 11 - rest) === Number(digits[weights.length]);
-  };
-  return check([5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) && check([6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]);
-}
 
 function publicUser(user: User) {
   return {
@@ -60,9 +37,9 @@ function firstValidationMessage(error: z.ZodError, fallback: string) {
 
 function documentAlreadyRegistered(res: Response) {
   return res.status(409).json({
-    message: 'CPF ou CNPJ já cadastrado. Entre com a conta existente.',
+    message: 'CNPJ já cadastrado. Entre com a conta existente.',
     issues: {
-      fieldErrors: { document: ['CPF ou CNPJ já cadastrado.'] },
+      fieldErrors: { document: ['CNPJ já cadastrado.'] },
       formErrors: [],
     },
   });
@@ -79,13 +56,10 @@ const registerSchema = z.object({
   name: z.string().trim().min(2, 'Informe seu nome completo.'),
   email: z.string().email('Informe um e-mail válido.'),
   password: z.string().min(8, 'A senha deve ter pelo menos 8 caracteres.'),
-  companyName: z.string().trim().optional(),
+  companyName: z.string().trim().min(2, 'Informe o nome da empresa.').max(200),
   city: z.string().trim().min(2, 'Informe a cidade.'),
   state: z.string().trim().toUpperCase().refine((value) => BRAZIL_STATES.includes(value as (typeof BRAZIL_STATES)[number]), 'Informe um estado válido.'),
-  document: z.string().trim().min(11, 'Informe o CPF ou CNPJ.').refine((value) => {
-    const digits = onlyDigits(value);
-    return isValidCpf(digits) || isValidCnpj(digits);
-  }, 'Informe um CPF ou CNPJ válido.'),
+  document: z.string().trim().refine(isValidCnpj, 'Informe um CNPJ válido. O Club é exclusivo para lojistas.').transform(normalizeCnpj),
   phone: z.string().optional(),
 });
 
@@ -102,8 +76,8 @@ authRouter.post('/register', async (req, res) => {
   const email = parsed.data.email.toLowerCase();
   if (await repo.findOne({ where: { email } })) return res.status(409).json({ message: 'E-mail já cadastrado.' });
 
-  const document = onlyDigits(parsed.data.document);
-  if (await repo.findOne({ where: { document } })) return documentAlreadyRegistered(res);
+  const document = normalizeCnpj(parsed.data.document);
+  if (await findDocumentOwner(document)) return documentAlreadyRegistered(res);
 
   const { password, ...profile } = parsed.data;
   let user: User;
@@ -123,6 +97,47 @@ authRouter.post('/register', async (req, res) => {
 
   const token = signAccessToken({ sub: user.id, email: user.email, role: user.role, authVersion: user.authVersion || 0 });
   res.status(201).json({ token, user: publicUser(user) });
+});
+
+// Normalize formatting for legacy rows without rewriting historical documents.
+async function findDocumentOwner(document: string) {
+  return AppDataSource.getRepository(User).createQueryBuilder('user')
+    .where("UPPER(REPLACE(REPLACE(REPLACE(REPLACE(user.document, '.', ''), '/', ''), '-', ''), ' ', '')) = :document", { document }).getOne();
+}
+
+authRouter.patch('/business', requireAuth, requireRole(UserRole.CUSTOMER), async (req, res, next) => {
+  const parsed = z.object({
+    companyName: z.string().trim().min(2, 'Informe o nome da empresa.').max(200),
+    document: z.string().trim().refine(isValidCnpj, 'Informe um CNPJ válido.').transform(normalizeCnpj),
+  }).strict().safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: firstValidationMessage(parsed.error, 'Cadastro empresarial inválido.'), issues: parsed.error.flatten() });
+  try {
+    const repo = AppDataSource.getRepository(User);
+    const user = await repo.findOneByOrFail({ id: req.auth!.sub });
+    if (isValidCnpj(user.document || '') && normalizeCnpj(user.document!) !== parsed.data.document) {
+      return res.status(409).json({ message: 'Para alterar um CNPJ já cadastrado, fale com o atendimento.' });
+    }
+    const owner = await findDocumentOwner(parsed.data.document);
+    if (owner && owner.id !== user.id) return documentAlreadyRegistered(res);
+    await AppDataSource.transaction(async manager => {
+      const previousDocument = user.document;
+      user.companyName = parsed.data.companyName;
+      user.document = parsed.data.document;
+      user.registrationDocumentKey = parsed.data.document;
+      const update = manager.createQueryBuilder().update(User).set({ companyName: user.companyName, document: user.document, registrationDocumentKey: user.registrationDocumentKey })
+        .where('id = :id', { id: user.id });
+      if (previousDocument == null) update.andWhere('document IS NULL');
+      else update.andWhere('document = :previousDocument', { previousDocument });
+      if ((await update.execute()).affected !== 1) throw new Error('BUSINESS_CONFLICT');
+      const { AuditLog } = await import('../entities/AuditLog');
+      await manager.getRepository(AuditLog).save({ actorUserId: user.id, action: 'BUSINESS_REGISTRATION_UPDATED', entity: 'User', entityId: user.id });
+    });
+    return res.json({ user: publicUser(user) });
+  } catch (error) {
+    if (isRegistrationDocumentConflict(error)) return documentAlreadyRegistered(res);
+    if ((error as Error).message === 'BUSINESS_CONFLICT') return res.status(409).json({ message: 'O cadastro foi alterado. Recarregue a página e tente novamente.' });
+    next(error);
+  }
 });
 
 authRouter.post('/login', async (req, res) => {

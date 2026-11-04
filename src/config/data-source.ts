@@ -10,8 +10,11 @@ import { Invoice } from '../entities/Invoice';
 import { PaymentAttempt } from '../entities/PaymentAttempt';
 import { AuditLog } from '../entities/AuditLog';
 import { RecoveryRateLimit } from '../entities/RecoveryRateLimit';
+import { SiteContent } from '../entities/SiteContent';
+import { PriorityReservation } from '../entities/PriorityReservation';
+import { OperationalCorrections1793836800000 } from '../migrations/1793836800000-OperationalCorrections';
 
-const entities = [User, Plan, Subscription, PaymentMethod, Invoice, PaymentAttempt, AuditLog, RecoveryRateLimit];
+const entities = [User, Plan, Subscription, PaymentMethod, Invoice, PaymentAttempt, AuditLog, RecoveryRateLimit, SiteContent, PriorityReservation];
 const dbType = (process.env.DB_TYPE || 'sqlite').toLowerCase();
 const synchronize = (process.env.TYPEORM_SYNCHRONIZE || 'true') === 'true';
 
@@ -89,6 +92,7 @@ function createDataSource(): DataSource {
       synchronize,
       logging: false,
       entities,
+      migrations: [OperationalCorrections1793836800000],
     });
   }
 
@@ -100,6 +104,7 @@ function createDataSource(): DataSource {
     synchronize,
     logging: false,
     entities,
+    migrations: [OperationalCorrections1793836800000],
   });
 }
 

@@ -8,6 +8,8 @@ import { Invoice, InvoiceStatus } from '../entities/Invoice';
 import { PaymentAttempt, PaymentAttemptStatus } from '../entities/PaymentAttempt';
 import { PaymentMethod, PaymentMethodType } from '../entities/PaymentMethod';
 import { audit } from './audit';
+import { clubOffer } from '../config/club-pricing';
+import { reservePrioritySeat, releasePrioritySeat } from './priority-capacity';
 
 function billingPeriod(subscription: Stripe.Subscription) {
   const item = subscription.items?.data?.[0];
@@ -37,7 +39,6 @@ function addCalendarMonth(from: Date) {
 }
 
 export const PIX_MONTH_PURPOSE = 'pix_month';
-export const PIX_MONTH_PRICE_CENTS = 19997;
 
 export function subscriptionToKeep<T extends { id: string; created: number }>(subscriptions: T[]) {
   if (subscriptions.length === 0) return null;
@@ -247,6 +248,9 @@ export async function upsertLocalSubscription(params: {
 
   subscription.user = user;
   subscription.plan = plan;
+  const unitAmount = stripeSubscription.items?.data?.[0]?.price?.unit_amount;
+  const quantity = stripeSubscription.items?.data?.[0]?.quantity ?? 1;
+  if (unitAmount != null) subscription.billingAmountCents = unitAmount * quantity;
   subscription.status = status;
   if (!subscription.startedAt && status === SubscriptionStatus.ACTIVE) subscription.startedAt = periodStart;
   subscription.currentPeriodStart = periodStart;
@@ -262,7 +266,11 @@ export async function upsertLocalSubscription(params: {
     ? stripeSubscription.customer
     : stripeSubscription.customer.id;
   subscription.gatewaySubscriptionId = stripeSubscription.id;
+  // A paid checkout can arrive after its original lease expired. Recheck before activating.
+  const activationLease = plan.code === 'PRIORITY' && status === SubscriptionStatus.ACTIVE
+    ? await reservePrioritySeat(user.id) : null;
   await subscriptionRepo.save(subscription);
+  if (activationLease) await releasePrioritySeat(activationLease);
   const latestInvoice = stripeSubscription.latest_invoice;
   const paidLatest = latestInvoice && typeof latestInvoice !== 'string' && latestInvoice.status === 'paid'
     ? latestInvoice
@@ -543,6 +551,12 @@ export async function syncAllStripeInvoices(limit = 100) {
   for (const subscription of subscriptions) {
     if (!subscription.gatewaySubscriptionId) continue;
     try {
+      const current = await stripe.subscriptions.retrieve(subscription.gatewaySubscriptionId);
+      const item = current.items.data[0];
+      if (item?.price?.unit_amount != null) {
+        subscription.billingAmountCents = item.price.unit_amount * (item.quantity ?? 1);
+        await AppDataSource.getRepository(Subscription).save(subscription);
+      }
       await syncStripeInvoices(subscription);
     } catch (error) {
       console.error(`Falha ao sincronizar faturas Stripe (${subscription.id}):`, error);
@@ -678,11 +692,13 @@ export async function applyOneTimePixPayment(session: Stripe.Checkout.Session) {
     ? session.customer
     : session.customer?.id ?? subscription.gatewayCustomerId ?? user.stripeCustomerId ?? null;
   subscription.gatewaySubscriptionId = null;
+  const activationLease = plan.code === 'PRIORITY' ? await reservePrioritySeat(user.id) : null;
   await subscriptionRepo.save(subscription);
+  if (activationLease) await releasePrioritySeat(activationLease);
 
   await invoiceRepo.save(invoiceRepo.create({
     subscription,
-    amountCents: session.amount_total && session.amount_total > 0 ? session.amount_total : PIX_MONTH_PRICE_CENTS,
+    amountCents: session.amount_total && session.amount_total > 0 ? session.amount_total : clubOffer(plan.code).pix,
     status: InvoiceStatus.PAID,
     dueDate: window.periodEnd,
     paidAt,

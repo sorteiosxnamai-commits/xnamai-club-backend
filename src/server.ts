@@ -13,6 +13,7 @@ import { customerRouter } from './routes/customer';
 import { adminRouter } from './routes/admin';
 import { atendimentoRouter } from './routes/atendimento';
 import { webhooksRouter, stripeWebhookHandler } from './routes/webhooks';
+import { contentRouter, contentAdminRouter } from './routes/content';
 
 function normalizeOrigin(value: string): string {
   return value.trim().replace(/\/$/, '');
@@ -87,6 +88,8 @@ export function createApp() {
   api.use('/subscriptions', subscriptionsRouter);
   api.use('/me', customerRouter);
   api.use('/admin', adminRouter);
+  api.use('/content', contentRouter);
+  api.use('/admin/content', contentAdminRouter);
   api.use('/atendimento', atendimentoRouter);
   api.use('/webhooks', webhooksRouter);
   app.use('/api', api);
@@ -107,6 +110,8 @@ export function createApp() {
 }
 
 async function bootstrap() {
+  await initializeDatabase();
+  await seedInitialData();
   const app = createApp();
   await new Promise<void>((resolve) => {
     app.listen(env.port, '0.0.0.0', () => {
@@ -115,8 +120,6 @@ async function bootstrap() {
     });
   });
 
-  await initializeDatabase();
-  await seedInitialData();
   try {
     await ensureStripeWebhookEndpoint();
   } catch (error) {
