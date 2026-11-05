@@ -10,6 +10,7 @@ import { Invoice, InvoiceStatus } from '../entities/Invoice';
 import { pickPrimarySubscription } from '../services/membership-access';
 import { syncAllStripeInvoices } from '../services/stripe-billing';
 import { buildRevenueForecast } from '../services/revenue-forecast';
+import { loadStripeMrrTimeline } from '../services/stripe-mrr';
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole(UserRole.ADMIN));
@@ -55,17 +56,16 @@ function sumPaidInRange(invoices: Invoice[], start: Date, end: Date) {
   }, 0);
 }
 
-adminRouter.get('/dashboard', async (_req, res) => {
-  try {
-    await syncAllStripeInvoices();
-  } catch (error) {
-    console.error('Falha ao sincronizar faturas Stripe no dashboard admin:', error);
-  }
+function growthPercentBetween(currentCents: number, previousCents: number) {
+  if (previousCents === 0) return currentCents > 0 ? 100 : 0;
+  return Number((((currentCents - previousCents) / previousCents) * 100).toFixed(1));
+}
 
+adminRouter.get('/dashboard', async (_req, res) => {
   const subscriptionRepo = AppDataSource.getRepository(Subscription);
   const invoiceRepo = AppDataSource.getRepository(Invoice);
 
-  const activeSubscribers = await subscriptionRepo.count({ where: { status: SubscriptionStatus.ACTIVE } });
+  let activeSubscribers = await subscriptionRepo.count({ where: { status: SubscriptionStatus.ACTIVE } });
   const billableStatuses = [SubscriptionStatus.ACTIVE, SubscriptionStatus.PAYMENT_FAILED, SubscriptionStatus.PAST_DUE];
   const billable = await subscriptionRepo.count({ where: { status: In(billableStatuses) } });
   const pastDue = await subscriptionRepo.count({ where: { status: In([SubscriptionStatus.PAYMENT_FAILED, SubscriptionStatus.PAST_DUE]) } });
@@ -74,17 +74,49 @@ adminRouter.get('/dashboard', async (_req, res) => {
   const months = lastMonths(6);
   const current = months[months.length - 1];
   const previous = months[months.length - 2];
-  const paidInvoices = await invoiceRepo
-    .createQueryBuilder('invoice')
-    .where('invoice.status = :status', { status: InvoiceStatus.PAID })
-    .andWhere('COALESCE(invoice.paidAt, invoice.createdAt) >= :start', { start: months[0].start })
-    .andWhere('COALESCE(invoice.paidAt, invoice.createdAt) < :end', { end: current.end })
-    .getMany();
-  const monthlyRevenueCents = sumPaidInRange(paidInvoices, current.start, current.end);
-  const previousRevenueCents = sumPaidInRange(paidInvoices, previous.start, previous.end);
-  const growthPercent = previousRevenueCents === 0
-    ? (monthlyRevenueCents > 0 ? 100 : 0)
-    : Number((((monthlyRevenueCents - previousRevenueCents) / previousRevenueCents) * 100).toFixed(1));
+  const now = new Date();
+  let stripeMrr: Awaited<ReturnType<typeof loadStripeMrrTimeline>> = null;
+  try {
+    stripeMrr = await loadStripeMrrTimeline(months.map((month, index) => ({
+      at: index === months.length - 1 ? now : new Date(month.end.getTime() - 1),
+    })));
+  } catch (error) {
+    console.error('Falha ao calcular a MRR da Stripe:', error);
+  }
+
+  let monthlyRevenueCents = 0;
+  let previousRevenueCents = 0;
+  let revenueByMonth = months.map((month) => ({ key: month.key, label: month.label, revenueCents: 0 }));
+  if (stripeMrr) {
+    activeSubscribers = stripeMrr.subscribers;
+    monthlyRevenueCents = stripeMrr.currentCents;
+    previousRevenueCents = stripeMrr.points[stripeMrr.points.length - 2] ?? 0;
+    revenueByMonth = months.map((month, index) => ({
+      key: month.key,
+      label: month.label,
+      revenueCents: stripeMrr!.points[index] ?? 0,
+    }));
+  } else {
+    try {
+      await syncAllStripeInvoices();
+    } catch (error) {
+      console.error('Falha ao sincronizar faturas Stripe no dashboard admin:', error);
+    }
+    const paidInvoices = await invoiceRepo
+      .createQueryBuilder('invoice')
+      .where('invoice.status = :status', { status: InvoiceStatus.PAID })
+      .andWhere('COALESCE(invoice.paidAt, invoice.createdAt) >= :start', { start: months[0].start })
+      .andWhere('COALESCE(invoice.paidAt, invoice.createdAt) < :end', { end: current.end })
+      .getMany();
+    monthlyRevenueCents = sumPaidInRange(paidInvoices, current.start, current.end);
+    previousRevenueCents = sumPaidInRange(paidInvoices, previous.start, previous.end);
+    revenueByMonth = months.map((month) => ({
+      key: month.key,
+      label: month.label,
+      revenueCents: sumPaidInRange(paidInvoices, month.start, month.end),
+    }));
+  }
+  const growthPercent = growthPercentBetween(monthlyRevenueCents, previousRevenueCents);
 
   const rejectedPayments = await invoiceRepo.count({
     where: { status: InvoiceStatus.FAILED, createdAt: Between(current.start, current.end) },
@@ -93,12 +125,18 @@ adminRouter.get('/dashboard', async (_req, res) => {
     where: { createdAt: Between(current.start, current.end) },
   });
 
-  const revenueByMonth = months.map((month) => ({
-    key: month.key,
-    label: month.label,
-    revenueCents: sumPaidInRange(paidInvoices, month.start, month.end),
-  }));
-  const forecast = await buildRevenueForecast();
+  const forecast = stripeMrr
+    ? {
+        forecastSubscribers: stripeMrr.subscribers,
+        unpricedSubscribers: 0,
+        nextMonthForecastCents: stripeMrr.currentCents,
+        yearForecastCents: stripeMrr.currentCents * 12,
+        forecastByMonth: Array.from({ length: 12 }, (_, index) => {
+          const month = monthRange(index + 1);
+          return { key: month.key, label: `${month.label}/${String(month.year).slice(2)}`, revenueCents: stripeMrr.currentCents };
+        }),
+      }
+    : await buildRevenueForecast();
 
   res.json({
     activeSubscribers,
@@ -144,7 +182,6 @@ function planSummary(plan?: Plan | null) {
 adminRouter.get('/subscriptions', async (_req, res) => {
   const rows = await AppDataSource.getRepository(Subscription).find({
     order: { createdAt: 'DESC' },
-    take: 100,
     relations: ['user', 'plan'],
   });
   res.json(rows.map((subscription) => ({
@@ -197,7 +234,20 @@ adminRouter.get('/payments', async (_req, res) => {
     take: 100,
     relations: ['subscription', 'subscription.user', 'subscription.plan'],
   });
+  let stripeMrr: Awaited<ReturnType<typeof loadStripeMrrTimeline>> = null;
+  try {
+    stripeMrr = await loadStripeMrrTimeline([{ at: new Date() }]);
+  } catch (error) {
+    console.error('Falha ao calcular a MRR da Stripe nas cobranças:', error);
+  }
   const forecast = await buildRevenueForecast();
+  if (stripeMrr) {
+    forecast.forecastSubscribers = stripeMrr.subscribers;
+    forecast.unpricedSubscribers = 0;
+    forecast.nextMonthForecastCents = stripeMrr.currentCents;
+    forecast.yearForecastCents = stripeMrr.currentCents * 12;
+    forecast.forecastByMonth = forecast.forecastByMonth.map((month) => ({ ...month, revenueCents: stripeMrr.currentCents }));
+  }
   res.json({
     nextMonthForecastCents: forecast.nextMonthForecastCents,
     yearForecastCents: forecast.yearForecastCents,
