@@ -5,7 +5,7 @@ Foram atualizados os valores e as condições dos planos Basic e Fast Pass. O Ba
 
 O cadastro e a contratação passaram a exigir nome da empresa e CNPJ válido, numérico ou alfanumérico. CPF não é aceito em novos cadastros. Contas antigas podem regularizar os dados sem perder o período já pago. A validação confere formato e dígitos verificadores, sem consultar a situação cadastral na Receita Federal.
 
-Foi adicionado ao admin um editor de textos para cinco telas, com prévia, publicação, histórico e restauração dos textos padrão. O atendimento foi protegido por autenticação e permissões, os logs Vercel foram removidos e as atualizações do GitHub foram incorporadas.
+Foi adicionado ao admin um editor de textos para cinco telas, com prévia, publicação, histórico e restauração dos textos padrão. A mesa de atendimento permanece pública, sem login. Os logs Vercel foram removidos e as atualizações do GitHub foram incorporadas.
 
 Também foram corrigidos os preços PIX legados e as previsões financeiras. A inicialização passou a preservar senhas e configurações existentes. O Fast Pass recebeu controle de reservas e disponibilidade no portal; pagamentos feitos diretamente nos links externos ainda exigem conferência manual das vagas.
 

@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import { requireAuth, requireRole } from '../middleware/auth';
 import { In } from 'typeorm';
 import { AppDataSource } from '../config/data-source';
 import { LAUNCH_CASHBACK_CUTOFF } from '../config/business-rules';
@@ -17,7 +16,6 @@ const MEMBERS_CACHE_KEY = 'atendimento:members:v8';
 const MEMBERS_CACHE_TTL = 45;
 
 export const atendimentoRouter = Router();
-atendimentoRouter.use(requireAuth, requireRole(UserRole.ADMIN, UserRole.SUPPORT));
 
 const JOINED_STATUSES = new Set<SubscriptionStatus>([
   SubscriptionStatus.ACTIVE,

@@ -11,7 +11,7 @@ A conexão Vercel disponível nesta sessão lista somente a equipe jpedro00s-pro
 1. Confirmar projeto Vercel do frontend, serviço Render da API e banco PostgreSQL correspondentes ao Club. Guardar um backup do banco e os identificadores das versões atuais.
 2. No backend, executar `npm ci` e `npm run build`. Com o ambiente apontando explicitamente para o banco de produção, executar `npm run migrate`. O comando força synchronize=false e aplica a migração aditiva: site_content, priority_reservations e subscriptions.billingAmountCents. Não altera preços nem senhas de contratos existentes.
 3. Publicar a API com TYPEORM_SYNCHRONIZE=false. A inicialização passa a escutar somente depois de inicializar banco e seed. Contas privilegiadas existentes não têm e-mail, papel ou senha sobrescritos. Para criar a primeira conta em um banco novo de produção, definir ADMIN_EMAIL/ADMIN_PASSWORD e SUPPORT_EMAIL/SUPPORT_PASSWORD (senhas com pelo menos 12 caracteres).
-4. Conferir `/api/health`, `/api/plans` e a rejeição HTTP 401 em `/api/atendimento/members` sem token. ADMIN/SUPPORT devem acessar; CUSTOMER deve receber 403. A listagem de planos informa PIX por plano e disponibilidade do Fast Pass.
+4. Conferir `/api/health`, `/api/plans` e HTTP 200 em `/api/atendimento/members` sem token. A mesa de atendimento permanece pública, como a tela do clube espera. A listagem de planos informa PIX por plano e disponibilidade do Fast Pass.
 5. Publicar o frontend com VITE_API_URL apontando para a origem correta da API. Conferir CORS/FRONTEND_URL antes de mudar os domínios. Verificar login, editor, atendimento, valores dos dois planos e os quatro destinos Asaas sem realizar pagamentos reais de teste.
 
 ## Operação com links Asaas
@@ -28,4 +28,4 @@ PIX avulso e cancelamentos agendados não entram como receita futura automática
 
 ## Retorno à versão anterior
 
-Manter as novas tabelas/coluna aditivas no rollback de aplicação, preservando conteúdo editorial, histórico e valores contratados. Não usar synchronize=true em produção para reverter esquema. Após rollback, conferir atendimento: a versão antiga tinha endpoints públicos e não deve ser restaurada sem manter a proteção de autenticação.
+Manter as novas tabelas/coluna aditivas no rollback de aplicação, preservando conteúdo editorial, histórico e valores contratados. Não usar synchronize=true em produção para reverter esquema. Após rollback, conferir atendimento: `/api/atendimento/members` responde sem login.

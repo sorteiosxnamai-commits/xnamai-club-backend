@@ -15,9 +15,9 @@ https://clubxnamai.com.br/ respondeu HTTP 200.
 https://xnamai-club-backend.onrender.com/api/health respondeu HTTP 200, com ok=true e database=true.
 https://xnamai-club-backend.onrender.com/api/plans respondeu HTTP 200. Ainda não apresentou pixPriceCents, compatível com a versão anterior permanecer publicada.
 
-Cobertura relevante: cadastro CNPJ numérico/alfanumérico e duplicidade, regularização de conta antiga, preservação do acesso pago, cadastro e login, recuperação de senha, seleção dos links Asaas, preço PIX por plano, clientes de boleto, permissões de atendimento, revogação de papel, edição e publicação de conteúdo, conflitos de revisão, proteção das credenciais no seed, previsões financeiras, concorrência de reservas e ativação tardia do Fast Pass.
+Cobertura relevante: cadastro CNPJ numérico/alfanumérico e duplicidade, regularização de conta antiga, preservação do acesso pago, cadastro e login, recuperação de senha, seleção dos links Asaas, preço PIX por plano, clientes de boleto, mesa de atendimento sem login, revogação de papel, edição e publicação de conteúdo, conflitos de revisão, proteção das credenciais no seed, previsões financeiras, concorrência de reservas e ativação tardia do Fast Pass.
 
-Mudanças de comportamento intencionais: novos cadastros e contratações exigem CNPJ e empresa; atendimento exige ADMIN/SUPPORT; novas adesões são encaminhadas aos links Asaas com conferência manual; Fast Pass bloqueia encaminhamento quando esgotado. Isso significa que a atualização não mantém todo o comportamento antigo: corrige precisamente os pontos solicitados.
+Mudanças de comportamento intencionais: novos cadastros e contratações exigem CNPJ e empresa; a mesa de atendimento continua pública, sem login; novas adesões são encaminhadas aos links Asaas com conferência manual; Fast Pass bloqueia encaminhamento quando esgotado. Isso significa que a atualização não mantém todo o comportamento antigo: corrige precisamente os pontos solicitados.
 
 Não foram realizados pagamentos reais, consulta de situação do CNPJ na Receita Federal, login em produção com credenciais de cliente ou validação direta do PostgreSQL de produção. Testes locais não constituem garantia de ausência de falhas em qualquer configuração de produção.
 

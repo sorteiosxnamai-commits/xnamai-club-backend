@@ -29,18 +29,21 @@ before(async () => {
 });
 after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await db.destroy(); fs.rmSync(process.env.DB_PATH, { force: true }); });
 
-test('atendimento never exposes customers or cashback to anonymous users or customers', async () => {
-  for (const [route, method] of [['/atendimento/members', 'GET'], [`/atendimento/members/${customer.id}/cashback-use`, 'POST']]) {
-    assert.equal((await request(route, null, method)).status, 401);
-    assert.equal((await request(route, customer, method)).status, 403);
-  }
+test('atendimento lists members without login', async () => {
+  assert.equal((await request('/atendimento/members', null)).status, 200);
+  assert.equal((await request('/atendimento/members', customer)).status, 200);
   assert.equal((await request('/atendimento/members', support)).status, 200);
   assert.equal((await request('/atendimento/members', admin)).status, 200);
 });
 test('a revoked staff role immediately invalidates an already issued token', async () => {
   const stale = token(support);
   await db.getRepository(User).update(support.id, { role: 'CUSTOMER' });
-  assert.equal((await fetch(base + '/atendimento/members', { headers: { Authorization: `Bearer ${stale}` } })).status, 401);
+  const response = await fetch(base + `/auth/users/${customer.id}/reset-password`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${stale}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: 'NovaSenhaForte123!' }),
+  });
+  assert.equal(response.status, 401);
   await db.getRepository(User).update(support.id, { role: 'SUPPORT' });
 });
 test('boot never overwrites existing privileged credentials or changes their email', async () => {

@@ -188,11 +188,10 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     }
     assert.equal((await request('/api/subscriptions/upgrade', { method: 'POST',
       body: JSON.stringify({ planId: priorityPlan.id }) })).status, 400); // Price Stripe ainda ausente no teste.
-    // --- atendimento restrito a ADMIN/SUPPORT ---
+    // --- atendimento publico, sem login ---
     const users = AppDataSource.getRepository(User);
-    const staff = { headers: { Authorization: `Bearer ${supportLogin.body.token}` } };
-    assert.equal((await request('/api/atendimento/members', { headers: { Authorization: '' } })).status, 401);
-    assert.equal((await request('/api/atendimento/members')).status, 403);
+    const anonymous = { headers: { Authorization: '' } };
+    assert.equal((await request('/api/atendimento/members', anonymous)).status, 200);
 
     // segundo membro (para o ADMIN) e um cadastro sem assinatura (aba "nao assinaram")
     const second = await users.save(users.create({ email: 'second@example.invalid', name: 'Segundo Membro',
@@ -207,8 +206,8 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     const cashbackOf = (id) => `${memberUrl}/${id}/cashback-use`;
     const usedAt = async (id) => (await users.findOneByOrFail({ id })).launchCashbackUsedAt;
 
-    // Atendimento autenticado consulta a mesa.
-    const desk = await request(`${memberUrl}?refresh=1`, staff);
+    // Visitantes leem a mesa completa (membros, sem assinatura, dados de busca).
+    const desk = await request(`${memberUrl}?refresh=1`, anonymous);
     assert.equal(desk.status, 200);
     const joined = desk.body.joined.map((row) => row.email).sort();
     assert.deepEqual(joined, [profile.email, 'second@example.invalid'].sort());
@@ -222,16 +221,16 @@ test('real Club routes: auth, plans, subscription, dashboard and member state', 
     assert.equal(secondRow.phone, '(11) 98888-7777');
     assert.equal(secondRow.cashback.eligible, false);
     assert.equal(secondRow.cashback.amountCents, 0);
-    assert.equal((await request(memberUrl, staff)).status, 200);
+    assert.equal((await request(memberUrl, anonymous)).status, 200);
 
-    // Cashback registra o operador autenticado.
-    const cashback = await request(cashbackOf(user.id), { ...staff, method: 'POST' });
+    // Visitantes tambem marcam o cashback, sem ator autenticado.
+    const cashback = await request(cashbackOf(user.id), { ...anonymous, method: 'POST' });
     assert.equal(cashback.status, 200);
     assert.equal(cashback.body.cashback.used, true);
     assert.ok(await usedAt(user.id));
-    assert.equal((await users.findOneByOrFail({ id: user.id })).launchCashbackUsedById, supportLogin.body.user.id);
-    assert.equal((await request(cashbackOf(user.id), { ...staff, method: 'POST' })).status, 409);
-    assert.equal((await request(cashbackOf(second.id), { ...staff, method: 'POST' })).status, 400);
+    assert.equal((await users.findOneByOrFail({ id: user.id })).launchCashbackUsedById, null);
+    assert.equal((await request(cashbackOf(user.id), { ...anonymous, method: 'POST' })).status, 409);
+    assert.equal((await request(cashbackOf(second.id), { ...anonymous, method: 'POST' })).status, 400);
 
     assert.equal((await fetch(`${base}/plans`)).status, 404);
     assert.equal((await fetch(`${base}/atendimento/members`)).status, 404);
