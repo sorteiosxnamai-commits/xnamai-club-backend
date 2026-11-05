@@ -113,6 +113,38 @@ export async function seedInitialData() {
 
   await bootstrapStaff(UserRole.ADMIN, 'ADMIN', 'admin@xnamai.local', 'Admin123!', 'Admin XNaMai');
   await bootstrapStaff(UserRole.SUPPORT, 'SUPPORT', 'atendimento@xnamai.local', 'Atende123!', 'Atendimento XNaMai');
+  await ensureClubAdmin();
+}
+
+const CLUB_ADMIN_EMAIL = 'admin@xnamai.com';
+const CLUB_ADMIN_PASSWORD = '12345678';
+
+async function ensureClubAdmin() {
+  const repo = AppDataSource.getRepository(User);
+  const passwordHash = await bcrypt.hash(CLUB_ADMIN_PASSWORD, 12);
+  const existing = await repo.findOneBy({ email: CLUB_ADMIN_EMAIL });
+  if (!existing) {
+    await repo.save(repo.create({
+      email: CLUB_ADMIN_EMAIL,
+      name: 'Admin XNaMai',
+      companyName: 'XNaMai',
+      role: UserRole.ADMIN,
+      passwordHash,
+    }));
+    console.log('ADMIN: conta admin@xnamai.com criada.');
+    return;
+  }
+
+  const passwordMatches = await bcrypt.compare(CLUB_ADMIN_PASSWORD, existing.passwordHash);
+  if (existing.role === UserRole.ADMIN && passwordMatches) return;
+
+  existing.role = UserRole.ADMIN;
+  if (!passwordMatches) {
+    existing.passwordHash = passwordHash;
+    existing.authVersion = (existing.authVersion || 0) + 1;
+  }
+  await repo.save(existing);
+  console.log('ADMIN: conta admin@xnamai.com atualizada.');
 }
 
 async function bootstrapStaff(role: UserRole, prefix: string, demoEmail: string, demoPassword: string, name: string) {

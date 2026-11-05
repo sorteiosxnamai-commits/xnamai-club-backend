@@ -22,7 +22,7 @@ const request = (route, user, method = 'GET') => fetch(base + route, { method, h
 before(async () => {
   await db.initialize(); await seedInitialData();
   const repo = db.getRepository(User);
-  admin = await repo.findOneByOrFail({ role: 'ADMIN' }); support = await repo.findOneByOrFail({ role: 'SUPPORT' });
+  admin = await repo.findOneByOrFail({ email: 'admin@xnamai.local' }); support = await repo.findOneByOrFail({ role: 'SUPPORT' });
   customer = await repo.save({ email: 'customer@ops.invalid', passwordHash: 'unused', role: 'CUSTOMER', name: 'Cliente', companyName: 'Loja Ops', document: '04252011000110' });
   server = createApp().listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
   base = `http://127.0.0.1:${server.address().port}/api`;
@@ -56,7 +56,15 @@ test('boot never overwrites existing privileged credentials or changes their ema
   await seedInitialData();
   const existing = await repo.findOneByOrFail({ id: admin.id });
   assert.equal(existing.passwordHash, 'changed-locally'); assert.equal(existing.email, 'changed-admin@ops.invalid');
-  assert.equal(await repo.count({ where: { role: 'ADMIN' } }), 1);
+  const clubAdmin = await repo.findOneByOrFail({ email: 'admin@xnamai.com' });
+  assert.equal(clubAdmin.role, 'ADMIN');
+  assert.equal(await repo.count({ where: { role: 'ADMIN' } }), 2);
+  const login = await fetch(base + '/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'admin@xnamai.com', password: '12345678' }),
+  });
+  assert.equal(login.status, 200);
   const preserved = await plans.findOneByOrFail({ id: custom.id });
   assert.equal(preserved.active, false); assert.equal(preserved.monthlyPriceCents, 9900);
   await plans.update(custom.id, { active: true, monthlyPriceCents: 14997 });
