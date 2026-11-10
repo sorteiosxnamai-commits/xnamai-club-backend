@@ -65,12 +65,14 @@ export function countsTowardMrr(subscription: MrrSubscription, at: Date, now = a
 export function mrrAt(subscriptions: MrrSubscription[], at: Date, now = at) {
   let cents = 0;
   let subscribers = 0;
+  let pastDue = 0;
   for (const subscription of subscriptions) {
     if (!countsTowardMrr(subscription, at, now)) continue;
     cents += subscriptionMonthlyCents(subscription);
     subscribers += 1;
+    if (subscription.status === 'past_due') pastDue += 1;
   }
-  return { cents, subscribers };
+  return { cents, subscribers, pastDue };
 }
 
 let cached: { at: number; rows: Stripe.Subscription[] } | null = null;
@@ -102,6 +104,7 @@ export async function loadStripeMrrTimeline(points: Array<{ at: Date }>) {
   return {
     currentCents: current.cents,
     subscribers: current.subscribers,
+    pastDue: current.pastDue,
     points: points.map((point) => mrrAt(rows, point.at, now).cents),
   };
 }

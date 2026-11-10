@@ -19,6 +19,10 @@ export const env = {
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
     testWebhookSecret: process.env.STRIPE_TEST_WEBHOOK_SECRET || '',
   },
+  asaas: {
+    apiKey: (process.env.ASAAS_API_KEY || '').trim(),
+    apiUrl: (process.env.ASAAS_API_URL || '').trim(),
+  },
   publicApiUrl: (process.env.PUBLIC_API_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, ''),
   redisUrl: (process.env.REDIS_URL || '').trim(),
   brevoApiKey: (process.env.BREVO_API_KEY || '').trim(),
