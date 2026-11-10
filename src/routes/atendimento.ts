@@ -10,9 +10,11 @@ import { boletoCustomerIds } from '../services/boleto-customers';
 import { audit } from '../services/audit';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache';
 import { membershipAccess, pickPrimarySubscription } from '../services/membership-access';
+import { loadAsaasSnapshot } from '../services/asaas-billing';
+import { asaasDeskForMember, indexAsaasCustomers, mergeAsaasDesk, type AsaasDeskIndex } from '../services/asaas-desk';
 import { reconcilePaidPixSessions, repairPaidThroughSubscriptions, syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
 
-const MEMBERS_CACHE_KEY = 'atendimento:members:v8';
+const MEMBERS_CACHE_KEY = 'atendimento:members:v9';
 const MEMBERS_CACHE_TTL = 45;
 
 export const atendimentoRouter = Router();
@@ -63,6 +65,12 @@ function isBoletoCustomer(user: User, boletoIds: Set<string>) {
   if ((user.paymentMethods ?? []).some((method) => method.type === PaymentMethodType.BOLETO)) return true;
   const customerId = user.stripeCustomerId || latestSubscription(user)?.gatewayCustomerId;
   return Boolean(customerId && boletoIds.has(customerId));
+}
+
+function withAsaasDesk<T extends ReturnType<typeof serializeMember>>(member: T, index: AsaasDeskIndex | null, user: User) {
+  if (!index) return member;
+  const match = asaasDeskForMember(index, { email: user.email, document: user.document });
+  return mergeAsaasDesk(member, match);
 }
 
 function serializeMember(user: User, boletoIds: Set<string>) {
@@ -123,7 +131,8 @@ function serializeMember(user: User, boletoIds: Set<string>) {
   };
 }
 
-async function listMembers() {
+async function listMembers(forceAsaas = false) {
+  const asaasIndex = await loadAsaasSnapshot(forceAsaas).then((snapshot) => snapshot ? indexAsaasCustomers(snapshot) : null);
   const users = await AppDataSource.getRepository(User)
     .createQueryBuilder('user')
     .leftJoinAndSelect('user.subscriptions', 'subscription')
@@ -173,8 +182,9 @@ async function listMembers() {
   const joined = [];
   const unsigned = [];
   for (const user of users) {
-    const member = serializeMember(user, boletoIds);
-    if (hasSigned(user)) joined.push(member);
+    const match = asaasIndex ? asaasDeskForMember(asaasIndex, { email: user.email, document: user.document }) : null;
+    const member = mergeAsaasDesk(serializeMember(user, boletoIds), match);
+    if (hasSigned(user) || match?.signed) joined.push(member);
     else unsigned.push(member);
   }
 
@@ -221,7 +231,7 @@ atendimentoRouter.get('/members', async (req, res) => {
     await cacheDel(MEMBERS_CACHE_KEY);
   }
 
-  const payload = await listMembers();
+  const payload = await listMembers(refresh);
   res.json(payload);
   await cacheSet(MEMBERS_CACHE_KEY, payload, MEMBERS_CACHE_TTL);
   if (!refresh) {
@@ -245,12 +255,13 @@ atendimentoRouter.post('/members/:id/cashback-use', async (req, res) => {
   } catch (error) {
     console.error('Falha ao identificar pagamentos por boleto:', error);
   }
-  const member = serializeMember(user, boletoIds);
+  const asaasIndex = await loadAsaasSnapshot().then((snapshot) => snapshot ? indexAsaasCustomers(snapshot) : null);
+  const member = withAsaasDesk(serializeMember(user, boletoIds), asaasIndex, user);
   if (!member.cashback.eligible) {
     return res.status(400).json({ message: 'Este cliente n\u00e3o tem cashback de lan\u00e7amento.' });
   }
   if (user.launchCashbackUsedAt) {
-    return res.status(409).json({ message: 'Cashback j\u00e1 utilizado.', member: serializeMember(user, boletoIds) });
+    return res.status(409).json({ message: 'Cashback j\u00e1 utilizado.', member });
   }
 
   user.launchCashbackUsedAt = new Date();
@@ -265,5 +276,5 @@ atendimentoRouter.post('/members/:id/cashback-use', async (req, res) => {
     metadata: { amountCents: member.cashback.amountCents },
   });
 
-  res.json(serializeMember(user, boletoIds));
+  res.json(withAsaasDesk(serializeMember(user, boletoIds), asaasIndex, user));
 });

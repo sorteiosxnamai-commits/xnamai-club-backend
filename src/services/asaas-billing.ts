@@ -70,9 +70,11 @@ export type AsaasCustomer = {
   id: string;
   name?: string | null;
   email?: string | null;
+  additionalEmails?: string | null;
   company?: string | null;
   phone?: string | null;
   mobilePhone?: string | null;
+  cpfCnpj?: string | null;
 };
 
 export type AsaasSnapshot = {
@@ -332,9 +334,9 @@ export function combineMrr(parts: Array<GatewayMrr | null | undefined>): Gateway
 let cached: { at: number; snapshot: AsaasSnapshot } | null = null;
 let inflight: Promise<AsaasSnapshot | null> | null = null;
 
-export async function loadAsaasSnapshot() {
+export async function loadAsaasSnapshot(force = false) {
   if (!asaasConfigured()) return null;
-  if (cached && Date.now() - cached.at < 60_000) return cached.snapshot;
+  if (!force && cached && Date.now() - cached.at < 60_000) return cached.snapshot;
   if (!inflight) {
     inflight = fetchAsaasSnapshot()
       .then((snapshot) => {
