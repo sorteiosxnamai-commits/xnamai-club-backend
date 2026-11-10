@@ -5,6 +5,7 @@ const {
   asaasMonthlyCents,
   asaasCountsTowardMrr,
   asaasMrrAt,
+  asaasOneTimeCents,
   asaasMrrTimeline,
   asaasRejectedCount,
   asaasCreatedCount,
@@ -83,6 +84,20 @@ test('an Asaas subscription inactivated in November still counts in the October 
   assert.equal(timeline.points[0], 14997);
   assert.equal(timeline.subscribers, 0);
   assert.equal(timeline.currentCents, 0);
+});
+
+test('a paid Asaas charge is one-time revenue when its contract is outside that month MRR', () => {
+  const start = new Date('2026-11-01T03:00:00.000Z');
+  const end = new Date('2026-12-01T03:00:00.000Z');
+  const cents = asaasOneTimeCents({
+    subscriptions: [subscription({ status: 'INACTIVE' }), subscription({ id: 'sub_live' })],
+    payments: [
+      { id: 'pay_old', subscription: 'sub_1', status: 'RECEIVED', paymentDate: '2026-11-02', value: 149.97 },
+      { id: 'pay_live', subscription: 'sub_live', status: 'RECEIVED', paymentDate: '2026-11-03', value: 149.97 },
+    ],
+    customers: [],
+  }, now, start, end, now);
+  assert.equal(cents, 14997);
 });
 
 test('Asaas payment statuses and rejected charges map into the admin totals', () => {

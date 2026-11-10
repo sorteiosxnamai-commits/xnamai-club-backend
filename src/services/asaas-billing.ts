@@ -188,6 +188,25 @@ export function asaasMrrAt(
   return { cents, subscribers, pastDue };
 }
 
+/** Paid Asaas charges left out of that month's MRR snapshot. */
+export function asaasOneTimeCents(snapshot: AsaasSnapshot, at: Date, start: Date, end: Date, now = at) {
+  const activity = lastActivityBySubscription(snapshot.payments);
+  const recurring = new Set(
+    snapshot.subscriptions
+      .filter((subscription) => asaasCountsTowardMrr(subscription, at, now, activity.get(subscription.id) ?? null))
+      .map((subscription) => subscription.id),
+  );
+  let cents = 0;
+  for (const payment of snapshot.payments) {
+    if (payment.deleted || !payment.status || !PAID_PAYMENT_STATUSES.has(payment.status)) continue;
+    const paid = parseAsaasDate(payment.paymentDate || payment.clientPaymentDate || payment.dueDate);
+    if (!paid || paid < start || paid >= end) continue;
+    if (payment.subscription && recurring.has(payment.subscription)) continue;
+    cents += reaisToCents(payment.value ?? 0);
+  }
+  return cents;
+}
+
 export function asaasMrrTimeline(snapshot: AsaasSnapshot, points: Array<{ at: Date }>, now = new Date()): GatewayMrr {
   const overdue = overdueSubscriptionIds(snapshot.payments);
   const activity = lastActivityBySubscription(snapshot.payments);

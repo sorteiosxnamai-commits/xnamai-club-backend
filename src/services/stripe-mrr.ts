@@ -5,6 +5,7 @@ const INCLUDED_NOW = new Set(['active', 'past_due']);
 const EXCLUDED = new Set(['incomplete', 'incomplete_expired', 'unpaid']);
 
 export type MrrSubscription = {
+  id?: string;
   status: string;
   start_date?: number | null;
   trial_end?: number | null;
@@ -75,6 +76,44 @@ export function mrrAt(subscriptions: MrrSubscription[], at: Date, now = at) {
   return { cents, subscribers, pastDue };
 }
 
+export type PaidCharge = {
+  paidAt?: Date | string | null;
+  createdAt?: Date | string | null;
+  amountCents: number;
+  gatewaySubscriptionId?: string | null;
+};
+
+function chargeInstant(charge: PaidCharge) {
+  const value = charge.paidAt ?? charge.createdAt;
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** Paid charges whose contract is not in the MRR snapshot for that month. */
+export function oneTimeCents(
+  subscriptions: MrrSubscription[],
+  charges: PaidCharge[],
+  at: Date,
+  start: Date,
+  end: Date,
+  now = at,
+) {
+  const recurring = new Set(
+    subscriptions
+      .filter((subscription) => subscription.id && countsTowardMrr(subscription, at, now))
+      .map((subscription) => subscription.id as string),
+  );
+  let cents = 0;
+  for (const charge of charges) {
+    const paid = chargeInstant(charge);
+    if (!paid || paid < start || paid >= end || charge.amountCents <= 0) continue;
+    if (charge.gatewaySubscriptionId && recurring.has(charge.gatewaySubscriptionId)) continue;
+    cents += charge.amountCents;
+  }
+  return cents;
+}
+
 let cached: { at: number; rows: Stripe.Subscription[] } | null = null;
 
 async function listSubscriptions() {
@@ -94,6 +133,10 @@ async function listSubscriptions() {
   }
   cached = { at: Date.now(), rows };
   return rows;
+}
+
+export async function loadStripeSubscriptions() {
+  return listSubscriptions();
 }
 
 export async function loadStripeMrrTimeline(points: Array<{ at: Date }>) {

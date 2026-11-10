@@ -10,10 +10,11 @@ import { Invoice, InvoiceStatus } from '../entities/Invoice';
 import { pickPrimarySubscription } from '../services/membership-access';
 import { syncAllStripeInvoices } from '../services/stripe-billing';
 import { buildRevenueForecast } from '../services/revenue-forecast';
-import { loadStripeMrrTimeline } from '../services/stripe-mrr';
+import { loadStripeMrrTimeline, loadStripeSubscriptions, oneTimeCents } from '../services/stripe-mrr';
 import {
   asaasCreatedCount,
   asaasMrrTimeline,
+  asaasOneTimeCents,
   asaasPaymentRows,
   asaasRejectedCount,
   asaasSubscriptionRows,
@@ -22,6 +23,7 @@ import {
   loadAsaasSnapshot,
   type GatewayMrr,
 } from '../services/asaas-billing';
+import { countCurrentAccess } from '../services/access-count';
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole(UserRole.ADMIN));
@@ -129,16 +131,48 @@ adminRouter.get('/dashboard', async (_req, res) => {
   let previousRevenueCents = 0;
   let revenueByMonth = months.map((month) => ({ key: month.key, label: month.label, revenueCents: 0 }));
   if (combinedMrr) {
-    activeSubscribers = combinedMrr.subscribers;
     const billable = combinedMrr.subscribers;
     complianceRate = billable === 0 ? 100 : ((billable - combinedMrr.pastDue) / billable) * 100;
     monthlyRevenueCents = combinedMrr.currentCents;
     previousRevenueCents = combinedMrr.points[combinedMrr.points.length - 2] ?? 0;
-    revenueByMonth = months.map((month, index) => ({
-      key: month.key,
-      label: month.label,
-      revenueCents: combinedMrr.points[index] ?? 0,
+    const [stripeRows, paidInvoices, accessCount] = await Promise.all([
+      loadStripeSubscriptions().catch((error: unknown) => {
+        console.error('Falha ao separar a receita avulsa da Stripe:', error);
+        return null;
+      }),
+      invoiceRepo
+        .createQueryBuilder('invoice')
+        .leftJoinAndSelect('invoice.subscription', 'subscription')
+        .where('invoice.status = :status', { status: InvoiceStatus.PAID })
+        .andWhere('COALESCE(invoice.paidAt, invoice.createdAt) >= :start', { start: months[0].start })
+        .andWhere('COALESCE(invoice.paidAt, invoice.createdAt) < :end', { end: current.end })
+        .getMany(),
+      countCurrentAccess(asaasSnapshot).catch((error: unknown) => {
+        console.error('Falha ao contar quem tem acesso agora:', error);
+        return combinedMrr.subscribers;
+      }),
+    ]);
+    activeSubscribers = accessCount;
+    const charges = paidInvoices.map((invoice) => ({
+      paidAt: invoice.paidAt,
+      createdAt: invoice.createdAt,
+      amountCents: invoice.amountCents,
+      gatewaySubscriptionId: invoice.subscription?.gatewaySubscriptionId ?? null,
     }));
+    revenueByMonth = months.map((month, index) => {
+      const at = points[index].at;
+      const stripeOneTime = stripeRows
+        ? oneTimeCents(stripeRows, charges, at, month.start, month.end, now)
+        : 0;
+      const asaasOneTime = asaasSnapshot
+        ? asaasOneTimeCents(asaasSnapshot, at, month.start, month.end, now)
+        : 0;
+      return {
+        key: month.key,
+        label: month.label,
+        revenueCents: (combinedMrr.points[index] ?? 0) + stripeOneTime + asaasOneTime,
+      };
+    });
   } else {
     try {
       await syncAllStripeInvoices();
@@ -182,6 +216,7 @@ adminRouter.get('/dashboard', async (_req, res) => {
     newSubscribers,
     sources: gatewaySources(stripeMrr, asaasMrr),
     revenueByMonth,
+    oneTimeRevenueCents: Math.max(0, (revenueByMonth[revenueByMonth.length - 1]?.revenueCents ?? 0) - monthlyRevenueCents),
     nextMonthForecastCents: forecast.nextMonthForecastCents,
     yearForecastCents: forecast.yearForecastCents,
     forecastSubscribers: forecast.forecastSubscribers,
