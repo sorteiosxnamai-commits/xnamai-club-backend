@@ -33,6 +33,7 @@ export type AsaasDeskMatch = {
 export type AsaasDeskIndex = {
   byEmail: Map<string, AsaasCustomer[]>;
   byDocument: Map<string, AsaasCustomer[]>;
+  byName: Map<string, AsaasCustomer | null>;
   subscriptions: Map<string, AsaasSubscription[]>;
   payments: Map<string, AsaasPayment[]>;
 };
@@ -70,9 +71,27 @@ function push<T>(map: Map<string, T[]>, key: string, value: T) {
   else map.set(key, [value]);
 }
 
+function normalizeLabel(value?: string | null) {
+  return (value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function claimName(map: Map<string, AsaasCustomer | null>, value: string | null | undefined, customer: AsaasCustomer) {
+  const key = normalizeLabel(value);
+  if (key.length < 8) return;
+  const current = map.get(key);
+  if (current === undefined) map.set(key, customer);
+  else if (current && current.id !== customer.id) map.set(key, null);
+}
+
 export function indexAsaasCustomers(snapshot: AsaasSnapshot): AsaasDeskIndex {
   const byEmail = new Map<string, AsaasCustomer[]>();
   const byDocument = new Map<string, AsaasCustomer[]>();
+  const byName = new Map<string, AsaasCustomer | null>();
   for (const customer of snapshot.customers) {
     const emails = [customer.email, ...(customer.additionalEmails ?? '').split(',')];
     for (const email of emails) {
@@ -81,6 +100,8 @@ export function indexAsaasCustomers(snapshot: AsaasSnapshot): AsaasDeskIndex {
     }
     const document = digits(customer.cpfCnpj);
     if (document.length >= 11) push(byDocument, document, customer);
+    claimName(byName, customer.name, customer);
+    claimName(byName, customer.company, customer);
   }
   const subscriptions = new Map<string, AsaasSubscription[]>();
   for (const subscription of snapshot.subscriptions) {
@@ -90,15 +111,21 @@ export function indexAsaasCustomers(snapshot: AsaasSnapshot): AsaasDeskIndex {
   for (const payment of snapshot.payments) {
     if (payment.customer) push(payments, payment.customer, payment);
   }
-  return { byEmail, byDocument, subscriptions, payments };
+  return { byEmail, byDocument, byName, subscriptions, payments };
 }
 
-function uniqueCustomers(index: AsaasDeskIndex, identity: { email?: string | null; document?: string | null }) {
+function uniqueCustomers(index: AsaasDeskIndex, identity: { email?: string | null; document?: string | null; name?: string | null; companyName?: string | null }) {
   const found = new Map<string, AsaasCustomer>();
   const email = emailKey(identity.email);
   const document = digits(identity.document);
   for (const customer of email ? index.byEmail.get(email) ?? [] : []) found.set(customer.id, customer);
   for (const customer of document.length >= 11 ? index.byDocument.get(document) ?? [] : []) found.set(customer.id, customer);
+  if (found.size === 0) {
+    for (const label of [identity.companyName, identity.name]) {
+      const named = index.byName.get(normalizeLabel(label));
+      if (named) found.set(named.id, named);
+    }
+  }
   return [...found.values()];
 }
 
@@ -154,7 +181,7 @@ function latestSubscription(subscriptions: AsaasSubscription[]) {
 
 export function asaasDeskForMember(
   index: AsaasDeskIndex,
-  identity: { email?: string | null; document?: string | null },
+  identity: { email?: string | null; document?: string | null; name?: string | null; companyName?: string | null },
   now = new Date(),
 ): AsaasDeskMatch | null {
   const customers = uniqueCustomers(index, identity);
@@ -213,24 +240,11 @@ export function asaasDeskForMember(
   };
 }
 
-export function mergeAsaasDesk<T extends DeskMember>(member: T, match: AsaasDeskMatch | null): T {
-  if (!match?.signed) return member;
-  const localUntil = member.subscription?.validUntil ? new Date(member.subscription.validUntil).getTime() : 0;
-  const asaasUntil = match.validUntil ? new Date(match.validUntil).getTime() : 0;
-  if (member.subscription?.active && (!match.active || localUntil > asaasUntil)) return member;
+export function attachAsaasDesk<T extends DeskMember>(member: T, match: AsaasDeskMatch | null): T & { asaas: AsaasDeskMatch | null } {
+  const asaas = match?.signed ? match : null;
   return {
     ...member,
-    boleto: Boolean(member.boleto || match.boleto),
-    subscription: {
-      status: match.status,
-      startedAt: match.startedAt,
-      currentPeriodEnd: match.validUntil,
-      validUntil: match.validUntil,
-      active: match.active,
-      renewed: match.renewed,
-      renewedAt: match.renewedAt,
-      plan: match.plan,
-    },
-    paymentMethod: match.paymentMethod ?? member.paymentMethod ?? null,
+    boleto: Boolean(member.boleto || asaas?.boleto),
+    asaas,
   };
 }

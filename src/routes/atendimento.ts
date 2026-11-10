@@ -11,10 +11,10 @@ import { audit } from '../services/audit';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache';
 import { membershipAccess, pickPrimarySubscription } from '../services/membership-access';
 import { loadAsaasSnapshot } from '../services/asaas-billing';
-import { asaasDeskForMember, indexAsaasCustomers, mergeAsaasDesk, type AsaasDeskIndex } from '../services/asaas-desk';
+import { asaasDeskForMember, attachAsaasDesk, indexAsaasCustomers, type AsaasDeskIndex } from '../services/asaas-desk';
 import { reconcilePaidPixSessions, repairPaidThroughSubscriptions, syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
 
-const MEMBERS_CACHE_KEY = 'atendimento:members:v9';
+const MEMBERS_CACHE_KEY = 'atendimento:members:v10';
 const MEMBERS_CACHE_TTL = 45;
 
 export const atendimentoRouter = Router();
@@ -67,10 +67,13 @@ function isBoletoCustomer(user: User, boletoIds: Set<string>) {
   return Boolean(customerId && boletoIds.has(customerId));
 }
 
+function memberIdentity(user: User) {
+  return { email: user.email, document: user.document, name: user.name, companyName: user.companyName };
+}
+
 function withAsaasDesk<T extends ReturnType<typeof serializeMember>>(member: T, index: AsaasDeskIndex | null, user: User) {
-  if (!index) return member;
-  const match = asaasDeskForMember(index, { email: user.email, document: user.document });
-  return mergeAsaasDesk(member, match);
+  if (!index) return { ...member, asaas: null };
+  return attachAsaasDesk(member, asaasDeskForMember(index, memberIdentity(user)));
 }
 
 function serializeMember(user: User, boletoIds: Set<string>) {
@@ -182,18 +185,18 @@ async function listMembers(forceAsaas = false) {
   const joined = [];
   const unsigned = [];
   for (const user of users) {
-    const match = asaasIndex ? asaasDeskForMember(asaasIndex, { email: user.email, document: user.document }) : null;
-    const member = mergeAsaasDesk(serializeMember(user, boletoIds), match);
+    const match = asaasIndex ? asaasDeskForMember(asaasIndex, memberIdentity(user)) : null;
+    const member = attachAsaasDesk(serializeMember(user, boletoIds), match);
     if (hasSigned(user) || match?.signed) joined.push(member);
     else unsigned.push(member);
   }
 
   joined.sort((a, b) => {
-    const aActive = a.subscription?.active ? 1 : 0;
-    const bActive = b.subscription?.active ? 1 : 0;
+    const aActive = a.subscription?.active || a.asaas?.active ? 1 : 0;
+    const bActive = b.subscription?.active || b.asaas?.active ? 1 : 0;
     if (aActive !== bActive) return bActive - aActive;
-    const aTime = a.subscription?.validUntil || a.subscription?.startedAt || a.createdAt;
-    const bTime = b.subscription?.validUntil || b.subscription?.startedAt || b.createdAt;
+    const aTime = a.asaas?.validUntil || a.subscription?.validUntil || a.subscription?.startedAt || a.createdAt;
+    const bTime = b.asaas?.validUntil || b.subscription?.validUntil || b.subscription?.startedAt || b.createdAt;
     return +new Date(bTime) - +new Date(aTime);
   });
 

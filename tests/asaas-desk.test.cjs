@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { indexAsaasCustomers, asaasDeskForMember, mergeAsaasDesk } = require('../dist/services/asaas-desk');
+const { indexAsaasCustomers, asaasDeskForMember, attachAsaasDesk } = require('../dist/services/asaas-desk');
 
 const now = new Date('2026-11-10T15:00:00.000Z');
 
@@ -74,24 +74,29 @@ test('a paid month keeps access after the Asaas subscription is inactivated', ()
   assert.equal(match.status, 'ACTIVE');
 });
 
-test('an inactive local membership is replaced by the current Asaas payment', () => {
+test('stripe and asaas stay side by side when both exist', () => {
   const match = asaasDeskForMember(indexAsaasCustomers(snapshot()), { email: 'paulovchorao.mtb@gmail.com' }, now);
-  const merged = mergeAsaasDesk({
+  const merged = attachAsaasDesk({
     boleto: false,
     subscription: { status: 'CANCELLED', active: false, validUntil: '2026-11-04T17:50:55.000Z', plan: { name: 'Plano Prioridade', monthlyPriceCents: 29797 } },
     paymentMethod: { type: 'CREDIT_CARD', cardBrand: 'visa', cardLastFour: '7812' },
   }, match);
-  assert.equal(merged.subscription.active, true);
-  assert.equal(merged.paymentMethod.provider, 'asaas');
+  assert.equal(merged.subscription.status, 'CANCELLED');
+  assert.equal(merged.subscription.plan.name, 'Plano Prioridade');
+  assert.equal(merged.paymentMethod.cardLastFour, '7812');
+  assert.equal(merged.asaas.active, true);
+  assert.equal(merged.asaas.plan.name, 'Plano Prioridade');
+  assert.equal(merged.asaas.paymentMethod.provider, 'asaas');
 });
 
-test('a live local subscription is kept when it lasts longer than Asaas', () => {
-  const match = asaasDeskForMember(indexAsaasCustomers(snapshot()), { email: 'paulovchorao.mtb@gmail.com' }, now);
-  const merged = mergeAsaasDesk({
-    boleto: false,
-    subscription: { status: 'ACTIVE', active: true, validUntil: '2027-01-10T00:00:00.000Z', plan: { name: 'Plano Basic', monthlyPriceCents: 14997 } },
-    paymentMethod: { type: 'CREDIT_CARD', cardBrand: 'visa', cardLastFour: '7812' },
-  }, match);
-  assert.equal(merged.subscription.plan.name, 'Plano Basic');
-  assert.equal(merged.paymentMethod.cardLastFour, '7812');
+test('a customer without the same e-mail still matches a unique company name', () => {
+  const data = snapshot({
+    customers: [{ id: 'cus_1', name: 'Paulo', email: 'outro@asaas.com', company: 'Chorão Presentes', cpfCnpj: '00000000000000' }],
+  });
+  const match = asaasDeskForMember(indexAsaasCustomers(data), {
+    email: 'paulovchorao.mtb@gmail.com',
+    document: '43083808000192',
+    companyName: 'Chorao Presentes',
+  }, now);
+  assert.equal(match.active, true);
 });
