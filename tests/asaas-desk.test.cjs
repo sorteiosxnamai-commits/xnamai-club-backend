@@ -57,6 +57,17 @@ test('the same payer matches by CNPJ when the e-mail differs', () => {
   assert.equal(match.plan.name, 'Plano Prioridade');
 });
 
+test('a doubled Asaas next due date does not push a November payment into January', () => {
+  const data = snapshot();
+  data.subscriptions[0].nextDueDate = '2027-01-13';
+  data.subscriptions[0].dateCreated = '2026-11-13';
+  data.payments[0].paymentDate = '2026-11-13';
+  data.payments[0].dueDate = '2026-11-13';
+  const match = asaasDeskForMember(indexAsaasCustomers(data), { email: 'paulovchorao.mtb@gmail.com' }, now);
+  assert.match(match.validUntil, /^2026-12-13/);
+  assert.equal(match.active, true);
+});
+
 test('an Asaas subscription without a received payment stays pending', () => {
   const data = snapshot();
   data.payments = [];

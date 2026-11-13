@@ -205,10 +205,9 @@ export function asaasDeskForMember(
     if (!coverage || next.until > coverage.until) coverage = next;
   }
   const nextDue = subscription?.status === 'ACTIVE' && !overdue ? parseAsaasDate(subscription.nextDueDate) : null;
-  if (paid.length > 0 && nextDue) {
-    const next = accessThrough(nextDue);
-    if (!coverage || next.until > coverage.until) coverage = next;
-  }
+  // O ciclo pago já define a validade. nextDueDate da Asaas às vezes avança
+  // outra vez na confirmação e empurraria novembro para janeiro.
+  if (!coverage && paid.length > 0 && nextDue) coverage = accessThrough(nextDue);
 
   const covered = Boolean(coverage && coverage.until.getTime() > now.getTime());
   let status: AsaasDeskMatch['status'] = 'PENDING';
