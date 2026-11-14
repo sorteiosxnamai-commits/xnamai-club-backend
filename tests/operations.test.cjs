@@ -126,8 +126,23 @@ test('Asaas link selection is authenticated and does not call an external paymen
   const response = await fetch(base + '/subscriptions/payment-link', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'LAUNCH', method: 'PIX' }) });
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { url: 'https://www.asaas.com/000/c/o1ec2qy62xy2osok', amountCents: 19999 });
+  const boleto = await fetch(base + '/subscriptions/payment-link', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'LAUNCH', method: 'BOLETO' }) });
+  assert.equal(boleto.status, 200);
+  assert.deepEqual(await boleto.json(), { url: 'https://www.asaas.com/000/c/o1ec2qy62xy2osok', amountCents: 19999 });
   assert.equal((await request('/subscriptions/payment-link', null, 'POST')).status, 401);
   assert.equal((await request('/subscriptions/payment-link', support, 'POST')).status, 403);
+});
+
+test('a cancelled subscription can open a new Asaas payment link', async () => {
+  const plan = await db.getRepository(Plan).findOneByOrFail({ code: 'LAUNCH' });
+  const saved = await db.getRepository(Subscription).save({
+    user: customer, plan, status: 'CANCELLED', gatewaySubscriptionId: 'sub_cancelled_pay',
+    currentPeriodEnd: new Date(Date.now() + 86400000), cancelledAt: new Date(),
+  });
+  const response = await fetch(base + '/subscriptions/payment-link', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'LAUNCH', method: 'CREDIT_CARD' }) });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).url, 'https://www.asaas.com/000/c/dyt747auecm0y89b');
+  await db.getRepository(Subscription).delete({ id: saved.id });
 });
 
 test('canceling one checkout attempt cannot remove another attempt reservation', async () => {
