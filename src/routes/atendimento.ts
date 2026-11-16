@@ -14,7 +14,7 @@ import { loadAsaasSnapshot } from '../services/asaas-billing';
 import { asaasDeskForMember, attachAsaasDesk, indexAsaasCustomers, type AsaasDeskIndex } from '../services/asaas-desk';
 import { reconcilePaidPixSessions, repairPaidThroughSubscriptions, syncRecentStripeSubscriptions, syncRecentStripeSubscriptionsInBackground } from '../services/stripe-billing';
 
-const MEMBERS_CACHE_KEY = 'atendimento:members:v10';
+const MEMBERS_CACHE_KEY = 'atendimento:members:v11';
 const MEMBERS_CACHE_TTL = 45;
 
 export const atendimentoRouter = Router();

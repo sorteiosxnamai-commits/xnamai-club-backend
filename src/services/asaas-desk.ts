@@ -20,6 +20,7 @@ export type AsaasDeskMatch = {
   validUntil: string | null;
   renewed: boolean;
   renewedAt: string | null;
+  duplicateAt: string | null;
   plan: { name: string; monthlyPriceCents: number } | null;
   paymentMethod: {
     type: 'CREDIT_CARD' | 'PIX_RECURRING' | 'BOLETO';
@@ -175,8 +176,39 @@ function latestSubscription(subscriptions: AsaasSubscription[]) {
     .sort((a, b) => {
       const active = Number(b.status === 'ACTIVE') - Number(a.status === 'ACTIVE');
       if (active) return active;
-      return (parseAsaasDate(b.dateCreated)?.getTime() ?? 0) - (parseAsaasDate(a.dateCreated)?.getTime() ?? 0);
+      const created = (parseAsaasDate(a.dateCreated)?.getTime() ?? 0) - (parseAsaasDate(b.dateCreated)?.getTime() ?? 0);
+      if (created) return created;
+      return a.id.localeCompare(b.id);
     })[0] ?? null;
+}
+
+function renewalOpens(cycleStart: Date, cycle?: string | null) {
+  const end = addCycle(cycleStart, cycle);
+  end.setUTCDate(end.getUTCDate() - 7);
+  return end;
+}
+
+function paidCycles(payments: AsaasPayment[], cycle?: string | null) {
+  const dated = payments
+    .map((payment) => ({ payment, paidAt: parseAsaasDate(payment.paymentDate || payment.clientPaymentDate || payment.dueDate) }))
+    .filter((row): row is { payment: AsaasPayment; paidAt: Date } => Boolean(row.paidAt))
+    .sort((a, b) => a.paidAt.getTime() - b.paidAt.getTime() || a.payment.id.localeCompare(b.payment.id));
+  let cycleStart: Date | null = null;
+  let renewedAt: Date | null = null;
+  let duplicateAt: Date | null = null;
+  for (const row of dated) {
+    if (cycleStart && row.paidAt.getTime() < renewalOpens(cycleStart, cycle).getTime()) {
+      duplicateAt = row.paidAt;
+      continue;
+    }
+    if (cycleStart) renewedAt = row.paidAt;
+    cycleStart = row.paidAt;
+  }
+  return {
+    coverage: cycleStart ? accessThrough(addCycle(cycleStart, cycle)) : null,
+    renewedAt,
+    duplicateAt,
+  };
 }
 
 export function asaasDeskForMember(
@@ -197,13 +229,8 @@ export function asaasDeskForMember(
       - (parseAsaasDate(a.paymentDate || a.clientPaymentDate || a.dueDate)?.getTime() ?? 0));
   const overdue = payments.some((payment) => payment.status === 'OVERDUE' || payment.status === 'DUNNING_REQUESTED');
   const cycle = subscription?.cycle ?? 'MONTHLY';
-  let coverage: { until: Date; day: string } | null = null;
-  for (const payment of paid) {
-    const paidAt = parseAsaasDate(payment.paymentDate || payment.clientPaymentDate || payment.dueDate);
-    if (!paidAt) continue;
-    const next = accessThrough(addCycle(paidAt, cycle));
-    if (!coverage || next.until > coverage.until) coverage = next;
-  }
+  const cycles = paidCycles(paid, cycle);
+  let coverage = cycles.coverage;
   const nextDue = subscription?.status === 'ACTIVE' && !overdue ? parseAsaasDate(subscription.nextDueDate) : null;
   // O ciclo pago já define a validade. nextDueDate da Asaas às vezes avança
   // outra vez na confirmação e empurraria novembro para janeiro.
@@ -231,8 +258,9 @@ export function asaasDeskForMember(
     active: status === 'ACTIVE',
     startedAt: started ? asaasDateIso(started.toISOString().slice(0, 10)) : null,
     validUntil,
-    renewed: paid.length >= 2,
-    renewedAt: paid.length >= 2 ? asaasDateIso(paid[0]?.paymentDate || paid[0]?.dueDate) : null,
+    renewed: Boolean(cycles.renewedAt),
+    renewedAt: cycles.renewedAt ? asaasDateIso(cycles.renewedAt.toISOString().slice(0, 10)) : null,
+    duplicateAt: cycles.duplicateAt ? asaasDateIso(cycles.duplicateAt.toISOString().slice(0, 10)) : null,
     plan: planFrom(description, amountSource ? cycleCents : 0, monthlyCents),
     paymentMethod: method,
     boleto: method?.type === 'BOLETO',

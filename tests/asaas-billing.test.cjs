@@ -48,7 +48,7 @@ test('Asaas amounts use cents and normalize the subscription cycle', () => {
 
 test('current Asaas MRR keeps active contracts, including overdue charges', () => {
   const active = subscription();
-  const overdue = subscription({ id: 'sub_overdue' });
+  const overdue = subscription({ id: 'sub_overdue', customer: 'cus_overdue' });
   const rows = [
     active,
     overdue,
@@ -84,6 +84,32 @@ test('an Asaas subscription inactivated in November still counts in the October 
   assert.equal(timeline.points[0], 14997);
   assert.equal(timeline.subscribers, 0);
   assert.equal(timeline.currentCents, 0);
+});
+
+test('two active Asaas subscriptions for the same customer count as one', () => {
+  const result = asaasMrrAt([
+    subscription({ id: 'sub_first', dateCreated: '2026-11-06' }),
+    subscription({ id: 'sub_second', dateCreated: '2026-11-09' }),
+  ], now, new Set());
+  assert.equal(result.subscribers, 1);
+  assert.equal(result.cents, 14997);
+});
+
+test('a second Asaas charge inside the same cycle is one-time revenue', () => {
+  const start = new Date('2026-11-01T03:00:00.000Z');
+  const end = new Date('2026-12-01T03:00:00.000Z');
+  const cents = asaasOneTimeCents({
+    subscriptions: [
+      subscription({ id: 'sub_first', dateCreated: '2026-11-06' }),
+      subscription({ id: 'sub_second', dateCreated: '2026-11-09' }),
+    ],
+    payments: [
+      { id: 'pay_1', subscription: 'sub_first', status: 'RECEIVED', paymentDate: '2026-11-06', value: 149.97 },
+      { id: 'pay_2', subscription: 'sub_second', status: 'RECEIVED', paymentDate: '2026-11-09', value: 149.97 },
+    ],
+    customers: [],
+  }, now, start, end, now);
+  assert.equal(cents, 14997);
 });
 
 test('a paid Asaas charge is one-time revenue when its contract is outside that month MRR', () => {

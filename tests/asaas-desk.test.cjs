@@ -57,6 +57,37 @@ test('the same payer matches by CNPJ when the e-mail differs', () => {
   assert.equal(match.plan.name, 'Plano Prioridade');
 });
 
+test('a second Basic charge three days later stays one subscription and is not a renewal', () => {
+  const data = snapshot();
+  data.subscriptions = [
+    { ...data.subscriptions[0], id: 'sub_first', value: 149.97, billingType: 'CREDIT_CARD', description: 'Plano Basic', dateCreated: '2026-11-06', nextDueDate: '2026-12-06' },
+    { ...data.subscriptions[0], id: 'sub_second', value: 149.97, billingType: 'CREDIT_CARD', description: 'Plano Basic', dateCreated: '2026-11-09', nextDueDate: '2026-12-09' },
+  ];
+  data.payments = [
+    { id: 'pay_1', customer: 'cus_1', subscription: 'sub_first', value: 149.97, status: 'RECEIVED', billingType: 'CREDIT_CARD', paymentDate: '2026-11-06', dueDate: '2026-11-06' },
+    { id: 'pay_2', customer: 'cus_1', subscription: 'sub_second', value: 149.97, status: 'RECEIVED', billingType: 'CREDIT_CARD', paymentDate: '2026-11-09', dueDate: '2026-11-09' },
+  ];
+  const match = asaasDeskForMember(indexAsaasCustomers(data), { email: 'paulovchorao.mtb@gmail.com' }, now);
+  assert.equal(match.active, true);
+  assert.equal(match.renewed, false);
+  assert.equal(match.plan.name, 'Plano Basic');
+  assert.equal(match.plan.monthlyPriceCents, 14997);
+  assert.match(match.validUntil, /^2026-12-06/);
+  assert.match(match.duplicateAt, /^2026-11-09/);
+});
+
+test('a payment in the next cycle renews the Asaas subscription once', () => {
+  const data = snapshot();
+  data.payments.push({
+    id: 'pay_2', customer: 'cus_1', subscription: 'sub_1', value: 297.97, status: 'RECEIVED', billingType: 'PIX', paymentDate: '2026-12-02', dueDate: '2026-12-02',
+  });
+  const match = asaasDeskForMember(indexAsaasCustomers(data), { email: 'paulovchorao.mtb@gmail.com' }, new Date('2026-12-05T15:00:00.000Z'));
+  assert.equal(match.renewed, true);
+  assert.match(match.renewedAt, /^2026-12-02/);
+  assert.equal(match.duplicateAt, null);
+  assert.match(match.validUntil, /^2027-01-02/);
+});
+
 test('a doubled Asaas next due date does not push a November payment into January', () => {
   const data = snapshot();
   data.subscriptions[0].nextDueDate = '2027-01-13';

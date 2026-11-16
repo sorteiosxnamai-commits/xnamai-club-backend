@@ -169,6 +169,30 @@ export function overdueSubscriptionIds(payments: AsaasPayment[]) {
   return ids;
 }
 
+function createdBefore(left: AsaasSubscription, right: AsaasSubscription) {
+  const leftCreated = parseAsaasDate(left.dateCreated)?.getTime() ?? 0;
+  const rightCreated = parseAsaasDate(right.dateCreated)?.getTime() ?? 0;
+  if (leftCreated !== rightCreated) return leftCreated < rightCreated;
+  return left.id.localeCompare(right.id) < 0;
+}
+
+/** One running contract per Asaas customer. A second subscription in the same cycle is not another subscriber. */
+export function asaasSubscriptionIdsForMrr(
+  subscriptions: AsaasSubscription[],
+  at: Date,
+  activity: Map<string, Date> = new Map(),
+  now = at,
+) {
+  const kept = new Map<string, AsaasSubscription>();
+  for (const subscription of subscriptions) {
+    if (!asaasCountsTowardMrr(subscription, at, now, activity.get(subscription.id) ?? null)) continue;
+    const key = subscription.customer || subscription.id;
+    const current = kept.get(key);
+    if (!current || createdBefore(subscription, current)) kept.set(key, subscription);
+  }
+  return new Set([...kept.values()].map((subscription) => subscription.id));
+}
+
 export function asaasMrrAt(
   subscriptions: AsaasSubscription[],
   at: Date,
@@ -176,11 +200,12 @@ export function asaasMrrAt(
   activity: Map<string, Date> = new Map(),
   now = at,
 ) {
+  const counting = asaasSubscriptionIdsForMrr(subscriptions, at, activity, now);
   let cents = 0;
   let subscribers = 0;
   let pastDue = 0;
   for (const subscription of subscriptions) {
-    if (!asaasCountsTowardMrr(subscription, at, now, activity.get(subscription.id) ?? null)) continue;
+    if (!counting.has(subscription.id)) continue;
     cents += asaasMonthlyCents(subscription);
     subscribers += 1;
     if (at.getTime() >= now.getTime() - 1000 && overdue.has(subscription.id)) pastDue += 1;
@@ -191,11 +216,7 @@ export function asaasMrrAt(
 /** Paid Asaas charges left out of that month's MRR snapshot. */
 export function asaasOneTimeCents(snapshot: AsaasSnapshot, at: Date, start: Date, end: Date, now = at) {
   const activity = lastActivityBySubscription(snapshot.payments);
-  const recurring = new Set(
-    snapshot.subscriptions
-      .filter((subscription) => asaasCountsTowardMrr(subscription, at, now, activity.get(subscription.id) ?? null))
-      .map((subscription) => subscription.id),
-  );
+  const recurring = asaasSubscriptionIdsForMrr(snapshot.subscriptions, at, activity, now);
   let cents = 0;
   for (const payment of snapshot.payments) {
     if (payment.deleted || !payment.status || !PAID_PAYMENT_STATUSES.has(payment.status)) continue;
@@ -323,7 +344,8 @@ export function asaasSubscriptionRows(snapshot: AsaasSnapshot) {
 export function asaasUpcomingCharges(snapshot: AsaasSnapshot, now = new Date()) {
   const customers = customerMap(snapshot.customers);
   const overdue = overdueSubscriptionIds(snapshot.payments);
-  return snapshot.subscriptions.filter((subscription) => asaasCountsTowardMrr(subscription, now)).map((subscription) => {
+  const counting = asaasSubscriptionIdsForMrr(snapshot.subscriptions, now);
+  return snapshot.subscriptions.filter((subscription) => counting.has(subscription.id)).map((subscription) => {
     const description = subscription.description?.trim() || 'Mensalidade';
     return {
       id: subscription.id,
