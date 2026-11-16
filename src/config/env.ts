@@ -22,6 +22,7 @@ export const env = {
   asaas: {
     apiKey: (process.env.ASAAS_API_KEY || '').trim(),
     apiUrl: (process.env.ASAAS_API_URL || '').trim(),
+    tironiTechApiKey: (process.env.ASAAS_TIRONI_TECH_API_KEY || '').trim(),
   },
   publicApiUrl: (process.env.PUBLIC_API_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, ''),
   redisUrl: (process.env.REDIS_URL || '').trim(),

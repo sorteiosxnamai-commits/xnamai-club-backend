@@ -7,6 +7,9 @@ process.env.DB_PATH = path.join(__dirname, '..', 'data', `operations-${process.p
 process.env.TYPEORM_SYNCHRONIZE = 'true';
 process.env.STRIPE_SECRET_KEY = '';
 process.env.REDIS_URL = '';
+process.env.PIX_TIRONI_TECH_ASAAS = 'true';
+process.env.ASAAS_API_KEY = 'test-xnamai-key';
+process.env.ASAAS_TIRONI_TECH_API_KEY = 'test-tironi-key';
 const { AppDataSource: db } = require('../dist/config/data-source');
 const { createApp } = require('../dist/server');
 const { User } = require('../dist/entities/User');
@@ -115,7 +118,7 @@ test('concurrent requests cannot reserve the last Fast Pass seat twice', async (
   assert.equal(result.filter(row => row.status === 'rejected').length, 1);
   assert.equal((await priorityAvailability()).remaining, 0);
   const rejected = users.slice(49)[result.findIndex(row => row.status === 'rejected')];
-  const response = await fetch(base + '/subscriptions/payment-link', { method: 'POST', headers: { Authorization: `Bearer ${token(rejected)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'PRIORITY', method: 'PIX' }) });
+  const response = await fetch(base + '/subscriptions/pix', { method: 'POST', headers: { Authorization: `Bearer ${token(rejected)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'PRIORITY' }) });
   assert.equal(response.status, 409);
   const held = users.slice(49)[result.findIndex(row => row.status === 'fulfilled')];
   await db.getRepository(PriorityReservation).update({ userId: held.id }, { expiresAt: new Date(Date.now() - 60000) });
@@ -124,8 +127,8 @@ test('concurrent requests cannot reserve the last Fast Pass seat twice', async (
 
 test('Asaas link selection is authenticated and does not call an external payment API', async () => {
   const response = await fetch(base + '/subscriptions/payment-link', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'LAUNCH', method: 'PIX' }) });
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { url: 'https://www.asaas.com/000/c/o1ec2qy62xy2osok', amountCents: 19999 });
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).message, /QR Code/);
   const boleto = await fetch(base + '/subscriptions/payment-link', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'LAUNCH', method: 'BOLETO' }) });
   assert.equal(boleto.status, 200);
   assert.deepEqual(await boleto.json(), { url: 'https://www.asaas.com/000/c/o1ec2qy62xy2osok', amountCents: 19999 });
@@ -133,20 +136,66 @@ test('Asaas link selection is authenticated and does not call an external paymen
   assert.equal((await request('/subscriptions/payment-link', support, 'POST')).status, 403);
 });
 
-test('an active Basic PIX month can open the Fast Pass payment link', async () => {
+test('an active Basic month can pay Fast Pass with an on-screen PIX QR and confirm it', async () => {
   const { PriorityReservation } = require('../dist/entities/PriorityReservation');
+  const { PaymentMethod } = require('../dist/entities/PaymentMethod');
   const plan = await db.getRepository(Plan).findOneByOrFail({ code: 'LAUNCH' });
   const saved = await db.getRepository(Subscription).save({
     user: customer, plan, status: 'ACTIVE', gatewaySubscriptionId: null,
     currentPeriodEnd: new Date(Date.now() + 86400000),
   });
-  const response = await fetch(base + '/subscriptions/payment-link', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'PRIORITY', method: 'PIX' }) });
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { url: 'https://www.asaas.com/000/c/dh2huehi75bvitg5', amountCents: 34999 });
-  const samePlan = await fetch(base + '/subscriptions/payment-link', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'LAUNCH', method: 'PIX' }) });
-  assert.equal(samePlan.status, 409);
-  await db.getRepository(PriorityReservation).delete({ userId: customer.id });
-  await db.getRepository(Subscription).delete({ id: saved.id });
+  const originalFetch = global.fetch;
+  let created = null;
+  let usedKey = '';
+  global.fetch = async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (!url.includes('asaas.com')) return originalFetch(input, init);
+    usedKey = new Headers(init?.headers).get('access_token') || '';
+    const method = init?.method || 'GET';
+    const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.includes('/customers?')) return json({ data: [{ id: 'cus_qr' }], hasMore: false });
+    if (url.endsWith('/payments') && method === 'POST') {
+      created = JSON.parse(init.body);
+      return json({ id: 'pay_qr_test', status: 'PENDING', value: created.value, customer: 'cus_qr', externalReference: created.externalReference });
+    }
+    if (url.endsWith('/pixQrCode')) return json({ encodedImage: 'abc', payload: '000201', expirationDate: '2026-11-16 23:59:59' });
+    if (url.includes('/payments/pay_qr_test')) return json({ id: 'pay_qr_test', status: 'RECEIVED', value: created.value, customer: 'cus_qr', externalReference: created.externalReference, paymentDate: '2026-11-16', billingType: 'PIX' });
+    return json({ errors: [{ description: 'não mockado' }] });
+  };
+  try {
+    const response = await fetch(base + '/subscriptions/pix', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'PRIORITY' }) });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.paymentId, 'pay_qr_test');
+    assert.equal(body.encodedImage, 'abc');
+    assert.equal(body.payload, '000201');
+    assert.equal(body.amountCents, 34999);
+    assert.equal(body.account, 'tironi_tech');
+    assert.equal(usedKey, 'test-tironi-key');
+    const samePlan = await fetch(base + '/subscriptions/pix', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'LAUNCH' }) });
+    assert.equal(samePlan.status, 409);
+    process.env.PIX_TIRONI_TECH_ASAAS = 'false';
+    const xnamai = await fetch(base + '/subscriptions/pix', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'PRIORITY' }) });
+    assert.equal(xnamai.status, 200);
+    assert.equal(usedKey, 'test-xnamai-key');
+    assert.equal((await xnamai.json()).account, 'xnamai');
+    const confirmed = await fetch(base + '/subscriptions/pix/pay_qr_test/confirm', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(confirmed.status, 200);
+    const paid = await confirmed.json();
+    assert.equal(paid.paid, true);
+    assert.ok(paid.validUntil);
+    const method = await db.getRepository(PaymentMethod).findOneByOrFail({ providerPaymentMethodId: `asaas-pix:${customer.id}` });
+    assert.equal(method.provider, 'asaas');
+    assert.equal(method.active, true);
+  } finally {
+    process.env.PIX_TIRONI_TECH_ASAAS = 'true';
+    global.fetch = originalFetch;
+    await db.getRepository(Invoice).delete({ gatewayInvoiceId: 'pay_qr_test' });
+    await db.getRepository(PaymentMethod).delete({ providerPaymentMethodId: `asaas-pix:${customer.id}` });
+    await db.getRepository(PriorityReservation).delete({ userId: customer.id });
+    await db.getRepository(Subscription).delete({ user: { id: customer.id } });
+  }
+  assert.ok(saved.id);
 });
 
 test('a cancelled subscription can open a new Asaas payment link', async () => {

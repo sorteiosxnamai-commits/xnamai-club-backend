@@ -1,4 +1,4 @@
-import { asaasConfigured, asaasList } from '../config/asaas';
+import { asaasAccountKeys, asaasConfigured, asaasList } from '../config/asaas';
 
 const FAILED_PAYMENT_STATUSES = new Set([
   'OVERDUE',
@@ -396,9 +396,37 @@ export async function loadAsaasSnapshot(force = false) {
   return inflight;
 }
 
-async function fetchAsaasSnapshot(): Promise<AsaasSnapshot> {
-  const subscriptions = await asaasList<AsaasSubscription>('/subscriptions', { includeDeleted: 'true' });
-  const payments = await asaasList<AsaasPayment>('/payments');
-  const customers = await asaasList<AsaasCustomer>('/customers');
+function mergeById<T extends { id: string }>(rows: T[]) {
+  const byId = new Map<string, T>();
+  for (const row of rows) byId.set(row.id, row);
+  return [...byId.values()];
+}
+
+async function fetchAsaasAccount(apiKey: string): Promise<AsaasSnapshot> {
+  const [subscriptions, payments, customers] = await Promise.all([
+    asaasList<AsaasSubscription>('/subscriptions', { includeDeleted: 'true' }, apiKey),
+    asaasList<AsaasPayment>('/payments', {}, apiKey),
+    asaasList<AsaasCustomer>('/customers', {}, apiKey),
+  ]);
   return { subscriptions, payments, customers };
+}
+
+async function fetchAsaasSnapshot(): Promise<AsaasSnapshot> {
+  const keys = asaasAccountKeys();
+  const results = await Promise.all(keys.map(async (apiKey) => {
+    try {
+      return await fetchAsaasAccount(apiKey);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('Falha ao consultar uma conta Asaas:', message);
+      return null;
+    }
+  }));
+  const present = results.filter((snapshot): snapshot is AsaasSnapshot => snapshot !== null);
+  if (present.length === 0) throw new Error('Asaas não respondeu.');
+  return {
+    subscriptions: mergeById(present.flatMap((snapshot) => snapshot.subscriptions)),
+    payments: mergeById(present.flatMap((snapshot) => snapshot.payments)),
+    customers: mergeById(present.flatMap((snapshot) => snapshot.customers)),
+  };
 }

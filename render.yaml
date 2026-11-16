@@ -63,5 +63,9 @@ services:
         sync: false
       - key: ASAAS_API_KEY
         sync: false
+      - key: PIX_TIRONI_TECH_ASAAS
+        value: "false"
+      - key: ASAAS_TIRONI_TECH_API_KEY
+        sync: false
       - key: PUBLIC_API_URL
         value: https://xnamai-club-backend.onrender.com

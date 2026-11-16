@@ -12,40 +12,92 @@ import { Subscription, SubscriptionStatus } from '../entities/Subscription';
 import { PaymentMethod, PaymentMethodType } from '../entities/PaymentMethod';
 import { clubOffer } from '../config/club-pricing';
 import { reservePrioritySeat, releasePrioritySeat } from '../services/priority-capacity';
+import { confirmAsaasPixPayment, createAsaasPixQr } from '../services/asaas-pix';
 import { applyOneTimePixPayment, applySetupPaymentMethod, auditSubscription, enforceSingleActiveStripeSubscription, expireOpenSubscriptionCheckouts, findBlockingStripeSubscription, PAYMENT_METHOD_UPDATE_PURPOSE, PIX_MONTH_PURPOSE, recordStripeInvoice, syncStripeInvoices, upsertLocalSubscription } from '../services/stripe-billing';
 
 export const subscriptionsRouter = Router();
 subscriptionsRouter.use(requireAuth, requireRole(UserRole.CUSTOMER));
 
+function paymentInProgress(row: Subscription, code: 'LAUNCH' | 'PRIORITY') {
+  if (row.status === SubscriptionStatus.CANCELLED) return false;
+  const open = row.status === SubscriptionStatus.PENDING
+    || Boolean(row.currentPeriodEnd && new Date(row.currentPeriodEnd).getTime() > Date.now())
+    || (row.status === SubscriptionStatus.ACTIVE && !row.currentPeriodEnd)
+    || Boolean(row.gatewaySubscriptionId);
+  if (!open) return false;
+  // PIX Basic has no Stripe subscription. Paying Fast Pass replaces that month instead of opening a second contract.
+  if (code === 'PRIORITY' && row.plan?.code === 'LAUNCH' && !row.gatewaySubscriptionId) return false;
+  return true;
+}
+
+function pixErrorStatus(error: unknown) {
+  const message = error instanceof Error ? error.message : 'Não foi possível concluir o PIX.';
+  const status = /não está configurada|CNPJ|não confere|não pertence|não encontrada|Plano/.test(message) ? 400 : 502;
+  return { status, message };
+}
+
 subscriptionsRouter.post('/payment-link', requireBusinessRegistration, async (req, res, next) => {
   const parsed = z.object({ code: z.enum(['LAUNCH', 'PRIORITY']), method: z.enum(['CREDIT_CARD', 'BOLETO', 'PIX']) }).strict().safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Plano ou forma de pagamento inválidos.' });
+  if (parsed.data.method === 'PIX') return res.status(400).json({ message: 'O PIX abre o QR Code nesta tela.' });
   try {
     const plan = await AppDataSource.getRepository(Plan).findOneBy({ code: parsed.data.code, active: true });
     if (!plan) return res.status(400).json({ message: 'Plano indisponível.' });
     const subscriptions = await AppDataSource.getRepository(Subscription).find({ where: { user: { id: req.auth!.sub } } });
-    const covered = subscriptions.some(row => {
-      if (row.status === SubscriptionStatus.CANCELLED) return false;
-      const open = row.status === SubscriptionStatus.PENDING
-        || Boolean(row.currentPeriodEnd && new Date(row.currentPeriodEnd).getTime() > Date.now())
-        || (row.status === SubscriptionStatus.ACTIVE && !row.currentPeriodEnd)
-        || Boolean(row.gatewaySubscriptionId);
-      if (!open) return false;
-      // PIX Basic has no Stripe subscription. Paying Fast Pass replaces that month instead of opening a second contract.
-      if (parsed.data.code === 'PRIORITY' && row.plan?.code === 'LAUNCH' && !row.gatewaySubscriptionId) return false;
-      return true;
-    });
-    if (covered) return res.status(409).json({ message: 'Você já possui uma assinatura em andamento. Fale com o atendimento antes de pagar novamente.' });
+    if (subscriptions.some((row) => paymentInProgress(row, parsed.data.code))) {
+      return res.status(409).json({ message: 'Você já possui uma assinatura em andamento. Fale com o atendimento antes de pagar novamente.' });
+    }
     if (plan.code === 'PRIORITY') {
       try { await reservePrioritySeat(req.auth!.sub); }
       catch (error) { return res.status(409).json({ message: (error as Error).message }); }
     }
     const offer = clubOffer(plan.code);
     const method = parsed.data.method;
-    const url = method === 'CREDIT_CARD' ? offer.cardUrl : method === 'BOLETO' ? offer.boletoUrl : offer.pixUrl;
-    const amountCents = method === 'CREDIT_CARD' ? offer.card : method === 'BOLETO' ? offer.boleto : offer.pix;
+    const url = method === 'CREDIT_CARD' ? offer.cardUrl : offer.boletoUrl;
+    const amountCents = method === 'CREDIT_CARD' ? offer.card : offer.boleto;
     return res.json({ url, amountCents });
   } catch (error) { next(error); }
+});
+
+subscriptionsRouter.post('/pix', requireBusinessRegistration, async (req, res) => {
+  const parsed = z.object({ code: z.enum(['LAUNCH', 'PRIORITY']) }).strict().safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: 'Plano inválido.' });
+  const plan = await AppDataSource.getRepository(Plan).findOneBy({ code: parsed.data.code, active: true });
+  if (!plan) return res.status(400).json({ message: 'Plano indisponível.' });
+  const user = await AppDataSource.getRepository(User).findOneBy({ id: req.auth!.sub });
+  if (!user) return res.status(401).json({ message: 'Sessão inválida.' });
+  const subscriptions = await AppDataSource.getRepository(Subscription).find({ where: { user: { id: user.id } } });
+  if (subscriptions.some((row) => paymentInProgress(row, parsed.data.code))) {
+    return res.status(409).json({ message: 'Você já possui uma assinatura em andamento. Fale com o atendimento antes de pagar novamente.' });
+  }
+  let reservationId: string | null = null;
+  if (plan.code === 'PRIORITY') {
+    try { reservationId = await reservePrioritySeat(user.id); }
+    catch (error) { return res.status(409).json({ message: (error as Error).message }); }
+  }
+  try {
+    return res.json(await createAsaasPixQr(user, parsed.data.code));
+  } catch (error) {
+    if (reservationId) await releasePrioritySeat(reservationId).catch(() => undefined);
+    const failure = pixErrorStatus(error);
+    return res.status(failure.status).json({ message: failure.message });
+  }
+});
+
+subscriptionsRouter.post('/pix/:paymentId/confirm', async (req, res) => {
+  const paymentId = z.string().min(1).max(80).safeParse(req.params.paymentId);
+  if (!paymentId.success) return res.status(400).json({ message: 'Cobrança PIX inválida.' });
+  try {
+    const result = await confirmAsaasPixPayment(req.auth!.sub, paymentId.data);
+    return res.json({
+      paid: result.paid,
+      status: result.status ?? null,
+      validUntil: result.validUntil ?? null,
+    });
+  } catch (error) {
+    const failure = pixErrorStatus(error);
+    return res.status(failure.status).json({ message: failure.message });
+  }
 });
 
 function nextCalendarMonth(from = new Date()) {

@@ -8,7 +8,22 @@ export const clubOffers = {
     pixUrl: 'https://www.asaas.com/000/c/dh2huehi75bvitg5',
     boletoUrl: 'https://www.asaas.com/000/c/dh2huehi75bvitg5' },
 };
+
+const tironiTechPixUrl = {
+  LAUNCH: 'https://www.asaas.com/000/c/abss5rfg4vf41yac',
+  PRIORITY: 'https://www.asaas.com/000/c/c63rxqscnk2q6q6n',
+};
+
+/** PIX Tironi Tech Asaas. Unset means false, so PIX stays on the XNaMai account. */
+export function pixTironiTechAsaas() {
+  const raw = process.env.PIX_TIRONI_TECH_ASAAS;
+  if (raw == null || raw.trim() === '') return false;
+  return ['true', '1', 'yes', 'on'].includes(raw.trim().toLowerCase());
+}
+
 export function clubOffer(code: string) {
   if (code !== 'LAUNCH' && code !== 'PRIORITY') throw new Error('Plano sem oferta de lançamento configurada.');
-  return clubOffers[code];
+  const offer = clubOffers[code];
+  if (!pixTironiTechAsaas()) return offer;
+  return { ...offer, pixUrl: tironiTechPixUrl[code] };
 }
