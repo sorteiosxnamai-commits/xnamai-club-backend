@@ -133,6 +133,22 @@ test('Asaas link selection is authenticated and does not call an external paymen
   assert.equal((await request('/subscriptions/payment-link', support, 'POST')).status, 403);
 });
 
+test('an active Basic PIX month can open the Fast Pass payment link', async () => {
+  const { PriorityReservation } = require('../dist/entities/PriorityReservation');
+  const plan = await db.getRepository(Plan).findOneByOrFail({ code: 'LAUNCH' });
+  const saved = await db.getRepository(Subscription).save({
+    user: customer, plan, status: 'ACTIVE', gatewaySubscriptionId: null,
+    currentPeriodEnd: new Date(Date.now() + 86400000),
+  });
+  const response = await fetch(base + '/subscriptions/payment-link', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'PRIORITY', method: 'PIX' }) });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { url: 'https://www.asaas.com/000/c/dh2huehi75bvitg5', amountCents: 34999 });
+  const samePlan = await fetch(base + '/subscriptions/payment-link', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'LAUNCH', method: 'PIX' }) });
+  assert.equal(samePlan.status, 409);
+  await db.getRepository(PriorityReservation).delete({ userId: customer.id });
+  await db.getRepository(Subscription).delete({ id: saved.id });
+});
+
 test('a cancelled subscription can open a new Asaas payment link', async () => {
   const plan = await db.getRepository(Plan).findOneByOrFail({ code: 'LAUNCH' });
   const saved = await db.getRepository(Subscription).save({

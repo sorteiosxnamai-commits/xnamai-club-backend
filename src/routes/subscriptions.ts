@@ -24,12 +24,17 @@ subscriptionsRouter.post('/payment-link', requireBusinessRegistration, async (re
     const plan = await AppDataSource.getRepository(Plan).findOneBy({ code: parsed.data.code, active: true });
     if (!plan) return res.status(400).json({ message: 'Plano indisponível.' });
     const subscriptions = await AppDataSource.getRepository(Subscription).find({ where: { user: { id: req.auth!.sub } } });
-    const covered = subscriptions.some(row => row.status !== SubscriptionStatus.CANCELLED && (
-      row.status === SubscriptionStatus.PENDING
-      || (row.currentPeriodEnd && new Date(row.currentPeriodEnd).getTime() > Date.now())
-      || (row.status === SubscriptionStatus.ACTIVE && !row.currentPeriodEnd)
-      || Boolean(row.gatewaySubscriptionId)
-    ));
+    const covered = subscriptions.some(row => {
+      if (row.status === SubscriptionStatus.CANCELLED) return false;
+      const open = row.status === SubscriptionStatus.PENDING
+        || Boolean(row.currentPeriodEnd && new Date(row.currentPeriodEnd).getTime() > Date.now())
+        || (row.status === SubscriptionStatus.ACTIVE && !row.currentPeriodEnd)
+        || Boolean(row.gatewaySubscriptionId);
+      if (!open) return false;
+      // PIX Basic has no Stripe subscription. Paying Fast Pass replaces that month instead of opening a second contract.
+      if (parsed.data.code === 'PRIORITY' && row.plan?.code === 'LAUNCH' && !row.gatewaySubscriptionId) return false;
+      return true;
+    });
     if (covered) return res.status(409).json({ message: 'Você já possui uma assinatura em andamento. Fale com o atendimento antes de pagar novamente.' });
     if (plan.code === 'PRIORITY') {
       try { await reservePrioritySeat(req.auth!.sub); }
