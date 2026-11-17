@@ -39,7 +39,6 @@ function pixErrorStatus(error: unknown) {
 subscriptionsRouter.post('/payment-link', requireBusinessRegistration, async (req, res, next) => {
   const parsed = z.object({ code: z.enum(['LAUNCH', 'PRIORITY']), method: z.enum(['CREDIT_CARD', 'BOLETO', 'PIX']) }).strict().safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Plano ou forma de pagamento inválidos.' });
-  if (parsed.data.method === 'PIX') return res.status(400).json({ message: 'O PIX abre o QR Code nesta tela.' });
   try {
     const plan = await AppDataSource.getRepository(Plan).findOneBy({ code: parsed.data.code, active: true });
     if (!plan) return res.status(400).json({ message: 'Plano indisponível.' });
@@ -53,8 +52,8 @@ subscriptionsRouter.post('/payment-link', requireBusinessRegistration, async (re
     }
     const offer = clubOffer(plan.code);
     const method = parsed.data.method;
-    const url = method === 'CREDIT_CARD' ? offer.cardUrl : offer.boletoUrl;
-    const amountCents = method === 'CREDIT_CARD' ? offer.card : offer.boleto;
+    const url = method === 'CREDIT_CARD' ? offer.cardUrl : method === 'PIX' ? offer.pixUrl : offer.boletoUrl;
+    const amountCents = method === 'CREDIT_CARD' ? offer.card : method === 'PIX' ? offer.pix : offer.boleto;
     return res.json({ url, amountCents });
   } catch (error) { next(error); }
 });

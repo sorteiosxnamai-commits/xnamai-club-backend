@@ -127,8 +127,8 @@ test('concurrent requests cannot reserve the last Fast Pass seat twice', async (
 
 test('Asaas link selection is authenticated and does not call an external payment API', async () => {
   const response = await fetch(base + '/subscriptions/payment-link', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'LAUNCH', method: 'PIX' }) });
-  assert.equal(response.status, 400);
-  assert.match((await response.json()).message, /QR Code/);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { url: 'https://www.asaas.com/000/c/o1ec2qy62xy2osok', amountCents: 19999 });
   const boleto = await fetch(base + '/subscriptions/payment-link', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'LAUNCH', method: 'BOLETO' }) });
   assert.equal(boleto.status, 200);
   assert.deepEqual(await boleto.json(), { url: 'https://www.asaas.com/000/c/o1ec2qy62xy2osok', amountCents: 19999 });
