@@ -13,11 +13,11 @@ test('pix tironi tech asaas stays off by default and keeps the XNaMai PIX links'
   assert.equal(clubOffer('PRIORITY').cardUrl, 'https://www.asaas.com/000/c/h0k06a6rr4d00swi');
 });
 
-test('pix tironi tech asaas true uses the Tironi Tech PIX links', () => {
+test('pix tironi tech asaas stays on the XNaMai links even if the env flag is true', () => {
   process.env.PIX_TIRONI_TECH_ASAAS = 'true';
-  assert.equal(pixTironiTechAsaas(), true);
-  assert.equal(clubOffer('LAUNCH').pixUrl, 'https://www.asaas.com/000/c/abss5rfg4vf41yac');
-  assert.equal(clubOffer('PRIORITY').pixUrl, 'https://www.asaas.com/000/c/c63rxqscnk2q6q6n');
+  assert.equal(pixTironiTechAsaas(), false);
+  assert.equal(clubOffer('LAUNCH').pixUrl, 'https://www.asaas.com/000/c/o1ec2qy62xy2osok');
+  assert.equal(clubOffer('PRIORITY').pixUrl, 'https://www.asaas.com/000/c/dh2huehi75bvitg5');
 });
 
 test('pix tironi tech asaas false keeps the previous PIX links', () => {

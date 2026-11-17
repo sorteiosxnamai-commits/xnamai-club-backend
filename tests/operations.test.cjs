@@ -170,15 +170,10 @@ test('an active Basic month can pay Fast Pass with an on-screen PIX QR and confi
     assert.equal(body.encodedImage, 'abc');
     assert.equal(body.payload, '000201');
     assert.equal(body.amountCents, 34999);
-    assert.equal(body.account, 'tironi_tech');
-    assert.equal(usedKey, 'test-tironi-key');
+    assert.equal(body.account, 'xnamai');
+    assert.equal(usedKey, 'test-xnamai-key');
     const samePlan = await fetch(base + '/subscriptions/pix', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'LAUNCH' }) });
     assert.equal(samePlan.status, 409);
-    process.env.PIX_TIRONI_TECH_ASAAS = 'false';
-    const xnamai = await fetch(base + '/subscriptions/pix', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'PRIORITY' }) });
-    assert.equal(xnamai.status, 200);
-    assert.equal(usedKey, 'test-xnamai-key');
-    assert.equal((await xnamai.json()).account, 'xnamai');
     const confirmed = await fetch(base + '/subscriptions/pix/pay_qr_test/confirm', { method: 'POST', headers: { Authorization: `Bearer ${token(customer)}`, 'Content-Type': 'application/json' }, body: '{}' });
     assert.equal(confirmed.status, 200);
     const paid = await confirmed.json();
