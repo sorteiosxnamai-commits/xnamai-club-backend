@@ -4,6 +4,8 @@ import { stripe } from '../config/stripe';
 import { LAUNCH_CASHBACK_CUTOFF } from '../config/business-rules';
 import { Plan } from '../entities/Plan';
 import { User, UserRole } from '../entities/User';
+import { Subscription } from '../entities/Subscription';
+import { AuditLog } from '../entities/AuditLog';
 
 const LAUNCH_PLAN = {
   code: 'LAUNCH',
@@ -114,6 +116,45 @@ export async function seedInitialData() {
   await bootstrapStaff(UserRole.ADMIN, 'ADMIN', 'admin@xnamai.local', 'Admin123!', 'Admin XNaMai');
   await bootstrapStaff(UserRole.SUPPORT, 'SUPPORT', 'atendimento@xnamai.local', 'Atende123!', 'Atendimento XNaMai');
   await ensureClubAdmin();
+  await correctTatianaEmail();
+}
+
+const TATIANA_TYPO = 'tatypresentes1981@horamail.com';
+const TATIANA_EMAIL = 'tatypresentes1981@hotmail.com';
+
+export async function correctTatianaEmail() {
+  const repo = AppDataSource.getRepository(User);
+  const account = await repo.findOne({ where: { email: TATIANA_TYPO } });
+  if (!account || !/^tatiana\b/i.test(account.name)) return;
+
+  const blocker = await repo.findOne({ where: { email: TATIANA_EMAIL } });
+  if (blocker) {
+    const subscriptions = await AppDataSource.getRepository(Subscription).count({ where: { user: { id: blocker.id } } });
+    if (blocker.name !== 'Probe User' || subscriptions > 0) {
+      console.error('E-mail da Tatiana não corrigido: hotmail já pertence a outro cliente.');
+      return;
+    }
+    blocker.email = `retired-${blocker.id}@invalid.local`;
+    await repo.save(blocker);
+  }
+
+  account.email = TATIANA_EMAIL;
+  await repo.save(account);
+  if (stripe && account.stripeCustomerId) {
+    try {
+      await stripe.customers.update(account.stripeCustomerId, { email: TATIANA_EMAIL });
+    } catch (error) {
+      console.error('Stripe: e-mail da Tatiana atualizado no cadastro, mas não na Stripe.', error);
+    }
+  }
+  await AppDataSource.getRepository(AuditLog).save({
+    actorUserId: account.id,
+    action: 'EMAIL_CORRECTED',
+    entity: 'User',
+    entityId: account.id,
+    metadataJson: JSON.stringify({ from: TATIANA_TYPO, to: TATIANA_EMAIL }),
+  });
+  console.log('Cadastro da Tatiana atualizado para tatypresentes1981@hotmail.com.');
 }
 
 const CLUB_ADMIN_EMAIL = 'admin@xnamai.com';
