@@ -117,6 +117,7 @@ export async function seedInitialData() {
   await bootstrapStaff(UserRole.SUPPORT, 'SUPPORT', 'atendimento@xnamai.local', 'Atende123!', 'Atendimento XNaMai');
   await ensureClubAdmin();
   await correctTatianaEmail();
+  await resetTroqueiPassword();
 }
 
 const TATIANA_TYPO = 'tatypresentes1981@horamail.com';
@@ -155,6 +156,31 @@ export async function correctTatianaEmail() {
     metadataJson: JSON.stringify({ from: TATIANA_TYPO, to: TATIANA_EMAIL }),
   });
   console.log('Cadastro da Tatiana atualizado para tatypresentes1981@hotmail.com.');
+}
+
+const TROQUEI_EMAIL = 'troqueiofficial@gmail.com';
+const TROQUEI_PASSWORD = '123456';
+
+export async function resetTroqueiPassword() {
+  const repo = AppDataSource.getRepository(User);
+  const account = await repo.findOne({ where: { email: TROQUEI_EMAIL, role: UserRole.CUSTOMER } });
+  if (!account) return;
+  if (await bcrypt.compare(TROQUEI_PASSWORD, account.passwordHash)) return;
+  const passwordHash = await bcrypt.hash(TROQUEI_PASSWORD, 12);
+  await repo.createQueryBuilder().update(User).set({
+    passwordHash,
+    passwordResetTokenHash: null,
+    passwordResetExpiresAt: null,
+    authVersion: () => 'auth_version + 1',
+  }).where('id = :id AND role = :role', { id: account.id, role: UserRole.CUSTOMER }).execute();
+  await AppDataSource.getRepository(AuditLog).save({
+    actorUserId: account.id,
+    action: 'CUSTOMER_PASSWORD_RESET',
+    entity: 'User',
+    entityId: account.id,
+    metadataJson: JSON.stringify({ source: 'support' }),
+  });
+  console.log('Senha redefinida para troqueiofficial@gmail.com.');
 }
 
 const CLUB_ADMIN_EMAIL = 'admin@xnamai.com';
