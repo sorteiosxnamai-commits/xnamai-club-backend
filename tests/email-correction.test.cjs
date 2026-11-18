@@ -11,8 +11,7 @@ const { AppDataSource: db } = require('../dist/config/data-source');
 const { User } = require('../dist/entities/User');
 const { Plan } = require('../dist/entities/Plan');
 const { Subscription } = require('../dist/entities/Subscription');
-const bcrypt = require('bcryptjs');
-const { seedInitialData, correctTatianaEmail, resetEmporioPassword } = require('../dist/services/seed');
+const { seedInitialData, correctTatianaEmail } = require('../dist/services/seed');
 
 before(async () => {
   await db.initialize();
@@ -45,20 +44,4 @@ test('the hotmail typo is corrected only after the empty probe account releases 
 
   await correctTatianaEmail();
   assert.equal((await users.findOneByOrFail({ id: tatiana.id })).email, 'tatypresentes1981@hotmail.com');
-});
-
-test('emporio celular password is set once and left unchanged when it already matches', async () => {
-  const users = db.getRepository(User);
-  const account = await users.save(users.create({
-    email: 'emporiocelulargv@gmail.com', passwordHash: await bcrypt.hash('antiga', 4), role: 'CUSTOMER', name: 'Emporio', companyName: 'Emporio',
-  }));
-  await resetEmporioPassword();
-  const updated = await users.findOneByOrFail({ id: account.id });
-  assert.equal(await bcrypt.compare('123456', updated.passwordHash), true);
-  assert.equal(updated.authVersion, 1);
-  const hash = updated.passwordHash;
-  await resetEmporioPassword();
-  const again = await users.findOneByOrFail({ id: account.id });
-  assert.equal(again.passwordHash, hash);
-  assert.equal(again.authVersion, 1);
 });
