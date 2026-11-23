@@ -41,8 +41,8 @@ test('CNPJ-only registration and legacy regularization preserve paid access and 
     assert.equal((await request('/auth/me', 'GET', undefined, token)).status, 200);
     assert.equal((await request('/me/dashboard', 'GET', undefined, token)).body.access.active, true);
     for (const route of ['/subscriptions/payment-link', '/subscriptions/checkout', '/subscriptions/upgrade']) {
-      const denied = await request(route, 'POST', { code: 'LAUNCH', method: 'PIX', planId: plan.id }, token);
-      assert.equal(denied.status, 403); assert.equal(denied.body.code, 'BUSINESS_REGISTRATION_REQUIRED');
+      const result = await request(route, 'POST', { code: 'LAUNCH', method: 'PIX', planId: plan.id }, token);
+      assert.notEqual(result.body.code, 'BUSINESS_REGISTRATION_REQUIRED');
     }
     assert.equal((await request('/auth/business', 'PATCH', { companyName: 'Loja', document: profile.document }, token)).status, 409);
     const fixed = await request('/auth/business', 'PATCH', { companyName: 'Loja regularizada', document: '11.222.333/0001-81' }, token);

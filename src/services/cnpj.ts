@@ -14,6 +14,22 @@ export function isValidCnpj(value: string) {
   return check([5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) && check([6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]);
 }
 
+export function isValidCpf(value: string) {
+  const document = value.replace(/\D/g, '');
+  if (!/^\d{11}$/.test(document) || /^(\d)\1{10}$/.test(document)) return false;
+  const check = (length: number) => {
+    const weights = Array.from({ length }, (_, index) => length + 1 - index);
+    const sum = weights.reduce((total, weight, index) => total + Number(document[index]) * weight, 0);
+    const rest = sum % 11;
+    return (rest < 2 ? 0 : 11 - rest) === Number(document[length]);
+  };
+  return check(9) && check(10);
+}
+
+export function isValidCustomerDocument(value: string) {
+  return isValidCnpj(value) || isValidCpf(value);
+}
+
 export function formatCnpj(value: string) {
   return normalizeCnpj(value).replace(/[^A-Z0-9]/g, '').slice(0, 14)
     .replace(/^(.{2})(.)/, '$1.$2').replace(/^(.{6})(.)/, '$1.$2')
