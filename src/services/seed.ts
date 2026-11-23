@@ -6,7 +6,6 @@ import { Plan } from '../entities/Plan';
 import { User, UserRole } from '../entities/User';
 import { Subscription } from '../entities/Subscription';
 import { AuditLog } from '../entities/AuditLog';
-import { releaseJohnBoleto } from './release-john-boleto';
 
 const LAUNCH_PLAN = {
   code: 'LAUNCH',
@@ -118,7 +117,6 @@ export async function seedInitialData() {
   await bootstrapStaff(UserRole.SUPPORT, 'SUPPORT', 'atendimento@xnamai.local', 'Atende123!', 'Atendimento XNaMai');
   await ensureClubAdmin();
   await correctTatianaEmail();
-  await releaseJohnBoleto();
 }
 
 const TATIANA_TYPO = 'tatypresentes1981@horamail.com';
