@@ -213,6 +213,21 @@ export function asaasMrrAt(
   return { cents, subscribers, pastDue };
 }
 
+/** Money Asaas marked paid in the month. Each payment counts once, including the subscription charge. */
+export function asaasReceivedCents(payments: AsaasPayment[], start: Date, end: Date) {
+  const ids = new Set<string>();
+  let cents = 0;
+  for (const payment of payments) {
+    if (payment.deleted || !payment.id || ids.has(payment.id)) continue;
+    if (!payment.status || !PAID_PAYMENT_STATUSES.has(payment.status)) continue;
+    const paid = parseAsaasDate(payment.paymentDate || payment.clientPaymentDate || payment.dueDate);
+    if (!paid || paid < start || paid >= end) continue;
+    ids.add(payment.id);
+    cents += reaisToCents(payment.value ?? 0);
+  }
+  return { cents, ids };
+}
+
 /** Paid Asaas charges left out of that month's MRR snapshot. */
 export function asaasOneTimeCents(snapshot: AsaasSnapshot, at: Date, start: Date, end: Date, now = at) {
   const activity = lastActivityBySubscription(snapshot.payments);

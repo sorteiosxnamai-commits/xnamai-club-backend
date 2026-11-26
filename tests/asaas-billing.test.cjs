@@ -6,6 +6,7 @@ const {
   asaasCountsTowardMrr,
   asaasMrrAt,
   asaasOneTimeCents,
+  asaasReceivedCents,
   asaasMrrTimeline,
   asaasRejectedCount,
   asaasCreatedCount,
@@ -110,6 +111,20 @@ test('a second Asaas charge inside the same cycle is one-time revenue', () => {
     customers: [],
   }, now, start, end, now);
   assert.equal(cents, 14997);
+});
+
+test('November received cash sums both Asaas charges and does not add MRR again', () => {
+  const start = new Date('2026-11-01T03:00:00.000Z');
+  const end = new Date('2026-12-01T03:00:00.000Z');
+  const received = asaasReceivedCents([
+    { id: 'pay_1', subscription: 'sub_first', status: 'RECEIVED', paymentDate: '2026-11-06', value: 149.97 },
+    { id: 'pay_2', subscription: 'sub_second', status: 'RECEIVED', paymentDate: '2026-11-09', value: 149.97 },
+    { id: 'pay_2', subscription: 'sub_second', status: 'RECEIVED', paymentDate: '2026-11-09', value: 149.97 },
+    { id: 'pay_open', status: 'PENDING', paymentDate: '2026-11-10', value: 199.99 },
+    { id: 'pay_october', status: 'RECEIVED', paymentDate: '2026-10-20', value: 199.99 },
+  ], start, end);
+  assert.equal(received.cents, 29994);
+  assert.equal(received.ids.size, 2);
 });
 
 test('a paid Asaas charge is one-time revenue when its contract is outside that month MRR', () => {

@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { subscriptionMonthlyCents, countsTowardMrr, mrrAt, oneTimeCents } = require('../dist/services/stripe-mrr');
+const { subscriptionMonthlyCents, countsTowardMrr, mrrAt, oneTimeCents, stripeReceivedCents } = require('../dist/services/stripe-mrr');
 
 const now = new Date('2026-11-05T12:00:00.000Z');
 const october = new Date('2026-10-31T23:59:59.000Z');
@@ -49,6 +49,17 @@ test('a payment in the cancel month is one-time revenue and is not counted twice
   assert.equal(oneTimeCents([canceled, active], charges, now, novemberStart, decemberStart, now), 14997);
   const octoberStart = new Date('2026-10-01T03:00:00.000Z');
   assert.equal(oneTimeCents([canceled, active], charges, october, octoberStart, novemberStart, now), 5000);
+});
+
+test('Stripe cash ignores an Asaas payment copied into a local invoice', () => {
+  const start = new Date('2026-11-01T03:00:00.000Z');
+  const end = new Date('2026-12-01T03:00:00.000Z');
+  const cents = stripeReceivedCents([
+    { paidAt: new Date('2026-11-06T15:00:00.000Z'), amountCents: 14997, gatewaySubscriptionId: 'sub_live', gatewayInvoiceId: 'in_123' },
+    { paidAt: new Date('2026-11-06T15:00:00.000Z'), amountCents: 19999, gatewaySubscriptionId: null, gatewayInvoiceId: 'pay_asaas' },
+    { paidAt: new Date('2026-11-07T15:00:00.000Z'), amountCents: 19999, gatewaySubscriptionId: 'sub_asaas', gatewayInvoiceId: 'pay_other' },
+  ], start, end, new Set(['pay_asaas']));
+  assert.equal(cents, 14997);
 });
 
 test('yearly prices are normalized to a month and forever discounts apply', () => {

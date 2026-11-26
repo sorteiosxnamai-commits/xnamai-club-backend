@@ -81,6 +81,7 @@ export type PaidCharge = {
   createdAt?: Date | string | null;
   amountCents: number;
   gatewaySubscriptionId?: string | null;
+  gatewayInvoiceId?: string | null;
 };
 
 function chargeInstant(charge: PaidCharge) {
@@ -109,6 +110,24 @@ export function oneTimeCents(
     const paid = chargeInstant(charge);
     if (!paid || paid < start || paid >= end || charge.amountCents <= 0) continue;
     if (charge.gatewaySubscriptionId && recurring.has(charge.gatewaySubscriptionId)) continue;
+    cents += charge.amountCents;
+  }
+  return cents;
+}
+
+/** Stripe cash received in the month. Asaas payments copied into local invoices are left out. */
+export function stripeReceivedCents(charges: PaidCharge[], start: Date, end: Date, asaasPaymentIds: Set<string>) {
+  const seen = new Set<string>();
+  let cents = 0;
+  for (const charge of charges) {
+    const id = charge.gatewayInvoiceId || '';
+    if (id && (asaasPaymentIds.has(id) || id.startsWith('pay_'))) continue;
+    if (id && seen.has(id)) continue;
+    const paid = chargeInstant(charge);
+    if (!paid || paid < start || paid >= end || charge.amountCents <= 0) continue;
+    const subscriptionId = charge.gatewaySubscriptionId || '';
+    if (!id.startsWith('in_') && !subscriptionId.startsWith('sub_')) continue;
+    if (id) seen.add(id);
     cents += charge.amountCents;
   }
   return cents;
