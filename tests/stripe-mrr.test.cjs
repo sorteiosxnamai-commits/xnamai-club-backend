@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { subscriptionMonthlyCents, countsTowardMrr, mrrAt, oneTimeCents, stripeReceivedCents } = require('../dist/services/stripe-mrr');
+const { subscriptionMonthlyCents, countsTowardMrr, mrrAt, oneTimeCents, stripeReceivedCents, stripeChargeNetCents } = require('../dist/services/stripe-mrr');
 
 const now = new Date('2026-11-05T12:00:00.000Z');
 const october = new Date('2026-10-31T23:59:59.000Z');
@@ -60,6 +60,13 @@ test('Stripe cash ignores an Asaas payment copied into a local invoice', () => {
     { paidAt: new Date('2026-11-07T15:00:00.000Z'), amountCents: 19999, gatewaySubscriptionId: 'sub_asaas', gatewayInvoiceId: 'pay_other' },
   ], start, end, new Set(['pay_asaas']));
   assert.equal(cents, 14997);
+});
+
+test('a disputed or refunded Stripe charge does not count as received', () => {
+  assert.equal(stripeChargeNetCents({ status: 'succeeded', currency: 'brl', amount: 14997 }), 14997);
+  assert.equal(stripeChargeNetCents({ status: 'succeeded', currency: 'brl', amount: 14997, amount_refunded: 14997 }), 0);
+  assert.equal(stripeChargeNetCents({ status: 'succeeded', currency: 'brl', amount: 14997, disputed: true }), 0);
+  assert.equal(stripeChargeNetCents({ status: 'failed', currency: 'brl', amount: 14997 }), 0);
 });
 
 test('yearly prices are normalized to a month and forever discounts apply', () => {

@@ -1,6 +1,17 @@
 import type Stripe from 'stripe';
 import { stripe } from '../config/stripe';
 
+export function stripeChargeNetCents(charge: {
+  status?: string | null;
+  currency?: string | null;
+  amount?: number | null;
+  amount_refunded?: number | null;
+  disputed?: boolean | null;
+}) {
+  if (charge.status !== 'succeeded' || charge.currency !== 'brl' || charge.disputed) return 0;
+  return Math.max(0, (charge.amount ?? 0) - (charge.amount_refunded ?? 0));
+}
+
 const INCLUDED_NOW = new Set(['active', 'past_due']);
 const EXCLUDED = new Set(['incomplete', 'incomplete_expired', 'unpaid']);
 
@@ -129,6 +140,23 @@ export function stripeReceivedCents(charges: PaidCharge[], start: Date, end: Dat
     if (!id.startsWith('in_') && !subscriptionId.startsWith('sub_')) continue;
     if (id) seen.add(id);
     cents += charge.amountCents;
+  }
+  return cents;
+}
+
+export async function loadStripeReceivedCents(start: Date, end: Date) {
+  if (!stripe) return 0;
+  let cents = 0;
+  let startingAfter: string | undefined;
+  for (let page = 0; page < 20; page += 1) {
+    const result = await stripe.charges.list({
+      limit: 100,
+      created: { gte: Math.floor(start.getTime() / 1000), lt: Math.floor(end.getTime() / 1000) },
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+    });
+    for (const charge of result.data) cents += stripeChargeNetCents(charge);
+    if (!result.has_more || result.data.length === 0) break;
+    startingAfter = result.data[result.data.length - 1]?.id;
   }
   return cents;
 }

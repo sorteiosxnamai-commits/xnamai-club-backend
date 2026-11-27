@@ -122,9 +122,11 @@ test('November received cash sums both Asaas charges and does not add MRR again'
     { id: 'pay_2', subscription: 'sub_second', status: 'RECEIVED', paymentDate: '2026-11-09', value: 149.97 },
     { id: 'pay_open', status: 'PENDING', paymentDate: '2026-11-10', value: 199.99 },
     { id: 'pay_october', status: 'RECEIVED', paymentDate: '2026-10-20', value: 199.99 },
+    { id: 'pay_due_only', status: 'RECEIVED', dueDate: '2026-11-10', value: 199.99 },
+    { id: 'pay_credit', status: 'RECEIVED', creditDate: '2026-11-12', dueDate: '2026-10-10', value: 100 },
   ], start, end);
-  assert.equal(received.cents, 29994);
-  assert.equal(received.ids.size, 2);
+  assert.equal(received.cents, 39994);
+  assert.equal(received.ids.size, 3);
 });
 
 test('a paid Asaas charge is one-time revenue when its contract is outside that month MRR', () => {

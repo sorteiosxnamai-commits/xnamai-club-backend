@@ -10,10 +10,11 @@ import { Invoice, InvoiceStatus } from '../entities/Invoice';
 import { pickPrimarySubscription } from '../services/membership-access';
 import { syncAllStripeInvoices } from '../services/stripe-billing';
 import { buildRevenueForecast } from '../services/revenue-forecast';
-import { loadStripeMrrTimeline, stripeReceivedCents } from '../services/stripe-mrr';
+import { loadStripeMrrTimeline, loadStripeReceivedCents, loadStripeSubscriptions, oneTimeCents, stripeReceivedCents } from '../services/stripe-mrr';
 import {
   asaasCreatedCount,
   asaasMrrTimeline,
+  asaasOneTimeCents,
   asaasReceivedCents,
   asaasPaymentRows,
   asaasRejectedCount,
@@ -135,7 +136,11 @@ adminRouter.get('/dashboard', async (_req, res) => {
     complianceRate = billable === 0 ? 100 : ((billable - combinedMrr.pastDue) / billable) * 100;
     monthlyRevenueCents = combinedMrr.currentCents;
     previousRevenueCents = combinedMrr.points[combinedMrr.points.length - 2] ?? 0;
-    const [paidInvoices, accessCount] = await Promise.all([
+    const [stripeRows, paidInvoices, accessCount, stripeCash] = await Promise.all([
+      loadStripeSubscriptions().catch((error: unknown) => {
+        console.error('Falha ao separar a receita avulsa da Stripe:', error);
+        return null;
+      }),
       invoiceRepo
         .createQueryBuilder('invoice')
         .leftJoinAndSelect('invoice.subscription', 'subscription')
@@ -147,6 +152,10 @@ adminRouter.get('/dashboard', async (_req, res) => {
         console.error('Falha ao contar quem tem acesso agora:', error);
         return combinedMrr.subscribers;
       }),
+      loadStripeReceivedCents(current.start, current.end).catch((error: unknown) => {
+        console.error('Falha ao somar o recebido da Stripe:', error);
+        return null;
+      }),
     ]);
     activeSubscribers = accessCount;
     const charges = paidInvoices.map((invoice) => ({
@@ -156,14 +165,30 @@ adminRouter.get('/dashboard', async (_req, res) => {
       gatewaySubscriptionId: invoice.subscription?.gatewaySubscriptionId ?? null,
       gatewayInvoiceId: invoice.gatewayInvoiceId,
     }));
-    revenueByMonth = months.map((month) => {
+    revenueByMonth = months.map((month, index) => {
+      const closed = index < months.length - 1;
+      if (closed) {
+        const at = points[index].at;
+        const stripeOneTime = stripeRows
+          ? oneTimeCents(stripeRows, charges, at, month.start, month.end, now)
+          : 0;
+        const asaasOneTime = asaasSnapshot
+          ? asaasOneTimeCents(asaasSnapshot, at, month.start, month.end, now)
+          : 0;
+        return {
+          key: month.key,
+          label: month.label,
+          revenueCents: (combinedMrr.points[index] ?? 0) + stripeOneTime + asaasOneTime,
+        };
+      }
       const asaas = asaasSnapshot
         ? asaasReceivedCents(asaasSnapshot.payments, month.start, month.end)
         : { cents: 0, ids: new Set<string>() };
+      const stripe = stripeCash ?? stripeReceivedCents(charges, month.start, month.end, asaas.ids);
       return {
         key: month.key,
         label: month.label,
-        revenueCents: asaas.cents + stripeReceivedCents(charges, month.start, month.end, asaas.ids),
+        revenueCents: asaas.cents + stripe,
       };
     });
   } else {

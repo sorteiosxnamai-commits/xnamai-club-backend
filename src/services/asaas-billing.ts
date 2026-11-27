@@ -62,6 +62,7 @@ export type AsaasPayment = {
   dueDate?: string | null;
   paymentDate?: string | null;
   clientPaymentDate?: string | null;
+  creditDate?: string | null;
   dateCreated?: string | null;
   deleted?: boolean | null;
 };
@@ -220,7 +221,7 @@ export function asaasReceivedCents(payments: AsaasPayment[], start: Date, end: D
   for (const payment of payments) {
     if (payment.deleted || !payment.id || ids.has(payment.id)) continue;
     if (!payment.status || !PAID_PAYMENT_STATUSES.has(payment.status)) continue;
-    const paid = parseAsaasDate(payment.paymentDate || payment.clientPaymentDate || payment.dueDate);
+    const paid = parseAsaasDate(payment.paymentDate || payment.clientPaymentDate || payment.creditDate);
     if (!paid || paid < start || paid >= end) continue;
     ids.add(payment.id);
     cents += reaisToCents(payment.value ?? 0);
